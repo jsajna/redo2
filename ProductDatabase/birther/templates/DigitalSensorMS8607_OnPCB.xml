@@ -1,0 +1,6 @@
+<Fragment>
+    <!-- Pressure/Humidity/Temperature -->
+    <DigitalSensorMS8607>
+      <SensorConfig value="0x10"/>
+    </DigitalSensorMS8607>
+</Fragment>

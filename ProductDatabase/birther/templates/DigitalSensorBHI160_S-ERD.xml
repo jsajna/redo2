@@ -1,0 +1,7 @@
+<Fragment>
+    <!-- IMU (for S-ED/S-RD) -->
+    <DigitalSensorBHI160>
+      <!-- Orientation for S-ED/S-RD devices: [0x01 0x01] -->
+      <SensorConfig value="0x0101"/>
+    </DigitalSensorBHI160>
+</Fragment>

@@ -1,0 +1,8 @@
+<Fragment>
+    <UnivariatePolynomial>
+        <CalID value="80" />
+        <CalReferenceValue value="0.0" />
+        <PolynomialCoef value="1.904297e-8" /><!-- Base conversion to Gs @ 78 uG per LSB, with LSB shifted up 12 bits = 78e-6 / 4096 -->
+        <PolynomialCoef value="0.0" />
+    </UnivariatePolynomial>
+</Fragment>

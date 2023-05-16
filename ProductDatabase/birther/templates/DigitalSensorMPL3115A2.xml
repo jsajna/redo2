@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Pres/temp sensor, required for all Slam Stick X variants (temperature reference) -->
+    <DigitalSensorMPL3115A2/>
+</Fragment>

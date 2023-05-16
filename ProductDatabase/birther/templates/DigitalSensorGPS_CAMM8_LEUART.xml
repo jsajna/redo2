@@ -1,0 +1,5 @@
+<Fragment>
+    <DigitalSensorGPS_CAMM8>
+      <SensorConfig value="0x01"/> <!-- Use LEUART -->
+    </DigitalSensorGPS_CAMM8>
+</Fragment>

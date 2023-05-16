@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Low-g accelerometer (+/-8g) -->
+    <DigitalSensorADXL355></DigitalSensorADXL355>
+</Fragment>

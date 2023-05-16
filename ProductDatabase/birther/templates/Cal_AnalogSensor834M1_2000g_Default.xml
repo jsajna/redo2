@@ -1,0 +1,8 @@
+<Fragment>
+    <UnivariatePolynomial>
+        <CalID value="9" />
+        <CalReferenceValue value="0.0" />
+        <PolynomialCoef value="0.0610360875868" />
+        <PolynomialCoef value="-2000.0" />
+    </UnivariatePolynomial>
+</Fragment>

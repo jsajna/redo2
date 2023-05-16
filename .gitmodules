@@ -1,0 +1,7 @@
+[submodule "SlamStickLab"]
+	path = SlamStickLab
+	url = git@github.com:MideTechnology/SlamStickLab.git
+[submodule "endaqlib"]
+	path = endaqlib
+	url = https://github.com/MideTechnology/endaqlib.git
+	branch = main

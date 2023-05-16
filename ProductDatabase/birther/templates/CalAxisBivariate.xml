@@ -1,0 +1,13 @@
+<Fragment>
+	<BivariatePolynomial>
+		<CalID value="{axis.calibrationId}" />
+		<CalReferenceValue value="0"></CalReferenceValue>
+		<BivariateCalReferenceValue value="{session.temperature}" />
+		<BivariateChannelIDRef value="{axis.channelId}" />
+		<BivariateSubChannelIDRef value="{axis.subchannelId}" />
+		<PolynomialCoef value="{axis.value*sensor.info.tempComp*0.01}" /> <!-- Temperature gain coefficient term -->
+		<PolynomialCoef value="{axis.value}" /> <!-- Temperature-independent gain term -->
+		<PolynomialCoef value="{sensor.info.tempOffset}" /> <!-- Temperature offset term -->
+		<PolynomialCoef value="{axis.offset}" /> <!-- Temperature-independent offset term -->
+	</BivariatePolynomial>
+</Fragment>

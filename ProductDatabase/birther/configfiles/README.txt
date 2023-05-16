@@ -1,0 +1,1 @@
+This directory contains configuration files, which can be copied to birthed recorders.

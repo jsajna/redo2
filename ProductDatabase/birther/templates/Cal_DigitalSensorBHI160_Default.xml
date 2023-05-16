@@ -1,0 +1,41 @@
+<Fragment>
+    <!-- BHI160 - Accel -->
+    <UnivariatePolynomial>
+        <CalID value="43"/>
+        <CalReferenceValue value="0"/>
+        <!-- Basic linear conversion; "y=mx+b" form -->
+        <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+        <PolynomialCoef value="0.0001220703125"/> <!-- Gain = 2^-13 -->
+        <PolynomialCoef value="0.0"/> <!-- Zero offset -->
+    </UnivariatePolynomial>
+
+    <!-- BHI160 - Gyro -->
+    <UnivariatePolynomial>
+        <CalID value="47"/>
+        <CalReferenceValue value="0"/>
+        <!-- Basic linear conversion; "y=mx+b" form -->
+        <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+        <PolynomialCoef value="0.061035156"/> <!-- Gain = 2000 * 2^-15 -->
+        <PolynomialCoef value="0.0"/> <!-- Zero offset -->
+    </UnivariatePolynomial>
+
+    <!-- BHI160 - Mag -->
+    <UnivariatePolynomial>
+        <CalID value="51"/>
+        <CalReferenceValue value="0"/>
+        <!-- Basic linear conversion; "y=mx+b" form -->
+        <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+        <PolynomialCoef value="0.0305175"/> <!-- Gain = 1000 * 2^-15 -->
+        <PolynomialCoef value="0.0"/> <!-- Zero offset -->
+    </UnivariatePolynomial>
+
+    <!-- BHI160 - Quat -->
+    <UnivariatePolynomial>
+        <CalID value="65"/>
+        <CalReferenceValue value="0"/>
+        <!-- Basic linear conversion; "y=mx+b" form -->
+        <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+        <PolynomialCoef value="0.00006103515625"/> <!-- Gain = 2^-14 -->
+        <PolynomialCoef value="0.0"/> <!-- Zero offset -->
+    </UnivariatePolynomial>
+</Fragment>

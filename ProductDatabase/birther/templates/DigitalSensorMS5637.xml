@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Pressure/Temperature -->
+    <DigitalSensorMS5637></DigitalSensorMS5637>
+</Fragment>

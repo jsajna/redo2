@@ -1,0 +1,8 @@
+<Fragment>
+    <UnivariatePolynomial>
+        <CalID value="32" />
+        <CalReferenceValue value="0.0" />
+        <PolynomialCoef value="0.006100815984137879" /><!-- Base conversion to Gs @ 200g: (200+200)/65535 -->
+        <PolynomialCoef value="0.0" />
+    </UnivariatePolynomial>
+</Fragment>

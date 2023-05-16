@@ -1,0 +1,10 @@
+<Fragment>
+	<Battery>
+		<!-- {battery} -->
+		<Capacity_mAh value="{battery.capacity}" />
+		<Vddscale_full_thresh value="{battery.full}" />
+		<Vddscale_ok_thresh value="{battery.ok}" />
+		<Vddscale_low_thresh value="{battery.low}" />
+		<Vddscale_dead_thresh value="{battery.dead}" />
+	</Battery>
+</Fragment>

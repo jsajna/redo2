@@ -1,0 +1,10 @@
+<Fragment>
+	<UnivariatePolynomial>
+		<CalID value="9"/>
+		<CalReferenceValue value="0"/>
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="0.006100815984137879"/> <!-- Base conversion to Gs @ 200g: (200+200)/65535 -->
+		<PolynomialCoef value="-200.0"/> <!-- Zero offset in Gs -->
+	</UnivariatePolynomial>
+</Fragment>

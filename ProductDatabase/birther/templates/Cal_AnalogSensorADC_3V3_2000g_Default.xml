@@ -1,0 +1,8 @@
+<Fragment>
+	<UnivariatePolynomial>
+		<CalID value="4"></CalID>
+		<CalReferenceValue value="0" />
+		<PolynomialCoef value="0.000825" /> <!-- Convert from 2000g range to voltage range (-1.65 to 1.65) -->
+		<PolynomialCoef value="1.65" /> <!-- Offset for negative 'g' values (0 to 3.3) -->
+	</UnivariatePolynomial>
+</Fragment>

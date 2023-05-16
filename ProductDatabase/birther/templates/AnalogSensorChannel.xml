@@ -1,0 +1,11 @@
+<Fragment>
+		<AnalogSensorChannel>
+			<AnalogSensorChannelEntryID value="{channel.channelId}" />
+			<AnalogSensorChannelADCChannel value="{channel.adcChannel}" />
+			<AnalogSensorChannelAxisName value="{channel.axisName}" />
+			<AnalogSensorChannelCalIDRef value="{channel.calibrationId}" />
+			<AnalogSensorChannelCTF value="{channel.info.ctf}" />
+			<AnalogSensorBWLowerCutoff value="{channel.bwLowerCutoff}" />
+			<AnalogSensorBWUpperCutoff value="{channel.bwUpperCutoff}" />
+		</AnalogSensorChannel>
+</Fragment>

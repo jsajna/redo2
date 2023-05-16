@@ -1,0 +1,3 @@
+<Fragment>
+  <DigitalSensorBMI270/> <!-- BMI270 Gyroscope, with an interrupt line -->
+</Fragment>

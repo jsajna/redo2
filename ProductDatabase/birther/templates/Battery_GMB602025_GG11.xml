@@ -1,0 +1,10 @@
+<Fragment>
+	<Battery>
+		<!-- GMB602025 battery, 200mAh -->
+		<Capacity_mAh value="{battery.capacity}" />
+		<Vddscale_full_thresh value="39" />
+		<Vddscale_ok_thresh value="37" />
+		<Vddscale_low_thresh value="35" />
+		<Vddscale_dead_thresh value="33" />
+	</Battery>
+</Fragment>

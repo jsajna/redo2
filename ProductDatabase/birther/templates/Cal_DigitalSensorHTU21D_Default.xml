@@ -1,0 +1,11 @@
+<Fragment>
+  <!-- HTU21D: Humidity -->
+  <UnivariatePolynomial>
+    <CalID value="62"/>
+    <CalReferenceValue value="0"/>
+    <!-- Basic linear conversion; "y=mx+b" form -->
+    <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+    <PolynomialCoef value="1.0"/> <!-- Gain -->
+    <PolynomialCoef value="0.0"/> <!-- Zero offset -->
+  </UnivariatePolynomial>
+</Fragment>

@@ -1,0 +1,22 @@
+<DeviceManifest>
+	<SystemInfo>
+		<SerialNumber value="{birth.serialNumber}" />
+		<DateOfManufacture value="{birth.device.timestamp}" />
+		<DeviceTypeUID value="0x{birth.typeUID:08X}" />
+		<ProductName value="{birth.productName}" />
+		<HwRev value="{device.hwRev}" />
+		<MinFwRev value="{device.minFwRev}" />
+		<PartNumber value="{birth.partNumber}" />
+    <BatchIDStr value="{device.batchId}" />
+	</SystemInfo>
+
+	<AAFilterInfo>
+		<FilterResponse value="0" /> <!-- Butterworth -->
+		<FilterOrder value="5" />
+		<ClockToCornerRatio value="100" />
+		<FMin value="1" />
+		<FMax value="15000" />
+		<Bypassable value="0" />
+	</AAFilterInfo>
+
+</DeviceManifest>

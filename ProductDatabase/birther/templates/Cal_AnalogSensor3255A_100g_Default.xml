@@ -1,0 +1,11 @@
+<Fragment>
+    <!-- 'base' calibration for all sensor channels. Each channel has its own Fragment -->
+    <UnivariatePolynomial>
+        <CalID value="{sensor.calibrationId}"/>
+        <CalReferenceValue value="0"/>
+        <!-- Basic linear conversion; "y=mx+b" form -->
+        <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+        <PolynomialCoef value="0.00305180437933928435187304493782"/> <!-- Base conversion to Gs @ 100g: (100+100)/65535 -->
+        <PolynomialCoef value="-100.0"/> <!-- Zero offset in Gs -->
+    </UnivariatePolynomial>
+</Fragment>

@@ -1,0 +1,40 @@
+<Fragment>
+  <!-- Gyroscope (BHI270) -->
+  <UnivariatePolynomial>
+    <!-- Base conversion; counts -> deg/sec -->
+    <CalID value="84"></CalID>
+    <CalReferenceValue value="0"></CalReferenceValue>
+    <!-- Basic linear conversion; "y=mx+b" form -->
+    <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+    <PolynomialCoef value="0.061"></PolynomialCoef> <!-- Base conversion to 2000 deg/sec -->
+    <PolynomialCoef value="0.0"></PolynomialCoef> <!-- Zero offset -->
+  </UnivariatePolynomial>
+
+  <!-- If any per-axis trims needed, put them here. -->
+  <UnivariatePolynomial>
+    <CalID value="85"></CalID>
+    <CalReferenceValue value="0"></CalReferenceValue>
+    <!-- Basic linear conversion; "y=mx+b" form -->
+    <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+    <PolynomialCoef value="-1.0"></PolynomialCoef> <!-- Gain trim -->
+    <PolynomialCoef value="0.0"></PolynomialCoef> <!-- Zero offset trim -->
+  </UnivariatePolynomial>
+
+  <UnivariatePolynomial>
+    <CalID value="86"></CalID>
+    <CalReferenceValue value="0"></CalReferenceValue>
+    <!-- Basic linear conversion; "y=mx+b" form -->
+    <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+    <PolynomialCoef value="-1.0"></PolynomialCoef> <!-- Gain trim -->
+    <PolynomialCoef value="0.0"></PolynomialCoef> <!-- Zero offset trim -->
+  </UnivariatePolynomial>
+
+  <UnivariatePolynomial>
+    <CalID value="87"></CalID>
+    <CalReferenceValue value="0"></CalReferenceValue>
+    <!-- Basic linear conversion; "y=mx+b" form -->
+    <!-- 2 coef block [A B]: y = A(x-xref) + B -->
+    <PolynomialCoef value="1.0"></PolynomialCoef> <!-- Gain trim -->
+    <PolynomialCoef value="0.0"></PolynomialCoef> <!-- Zero offset trim -->
+  </UnivariatePolynomial>
+</Fragment>

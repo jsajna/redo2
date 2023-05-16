@@ -1,0 +1,26 @@
+<!--  Conditional header rendering and alert for invalid input-->
+{% if error %}
+    <script>alert("Invalid input please fill in a field")</script>
+    <h1>Search for Serial Number or Chip ID</h1>
+{% else %}
+    <h1>Search for Serial Number or Chip ID</h1>
+{% endif %}
+<!--  passes form input to the birth_info in views.py -->
+<form action="{% url 'products:birth_info' %}">
+<!--  passes scripting token for security  -->
+    {% csrf_token %}
+<!--  adds form  -->
+    {{ form }}
+    <br>
+    <br>
+    {{ form2 }}
+    <br>
+    <br>
+    {{ form3 }}
+    <br>
+    <br>
+    {{ form4 }}
+    <br>
+    <br>
+    <input type="submit" value="Search" id="search">
+</form>

@@ -1,0 +1,18 @@
+<Fragment>
+	<!-- For recorders without analog accelerometers -->
+	<UnivariatePolynomial>
+		<CalID value="9" />
+		<CalReferenceValue value="0" />
+		<!-- Convert 0-to-65535 to -32767.5 to 32767.5 -->
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="1" />
+		<PolynomialCoef value="-32767.5" /> <!-- Zero offset -->
+	</UnivariatePolynomial>
+	<UnivariatePolynomial>
+		<CalID value="4" />
+		<CalReferenceValue value="0" />
+		<PolynomialCoef value="-0.00016197544892894097" /> <!-- Base conversion from ticks to Pa (2 * -5.307530522779073 / 65535) -->
+		<PolynomialCoef value="0" />
+	</UnivariatePolynomial>
+</Fragment>

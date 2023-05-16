@@ -1,0 +1,12 @@
+<Fragment>
+    <!-- Calibration for a single sensor channel. -->
+	<UnivariatePolynomial>
+		<CalID value="{channel.calibrationId}"/>
+		<CalReferenceValue value="0"/> <!-- calibration reference g-level = 0 -->
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<!-- MB: Dummy calibration for testing; does nothing. -->
+		<PolynomialCoef value="1.0"/> <!-- gain term -->
+		<PolynomialCoef value="0.0"/> <!-- offset term -->
+	</UnivariatePolynomial>
+</Fragment>

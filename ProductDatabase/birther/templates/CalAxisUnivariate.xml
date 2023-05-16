@@ -1,0 +1,10 @@
+<Fragment>
+	<UnivariatePolynomial>
+		<CalID value="{axis.calibrationId}" />
+		<CalReferenceValue value="0" />
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="{axis.value}" />
+		<PolynomialCoef value="{axis.offset}" />
+	</UnivariatePolynomial>
+</Fragment>

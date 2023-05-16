@@ -1,0 +1,20 @@
+<Fragment>
+    <!-- MS5637:Pressure -->
+	<UnivariatePolynomial>
+		<CalID value="60"/>
+		<CalReferenceValue value="0"/>
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="100.0"/> <!-- Gain -->
+		<PolynomialCoef value="0.0"/> <!-- Zero offset -->
+	</UnivariatePolynomial>
+	<!-- MS5637: Temperature -->
+	<UnivariatePolynomial>
+		<CalID value="61"/>
+		<CalReferenceValue value="0"/>
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="1.0"/> <!-- Gain -->
+		<PolynomialCoef value="0.0"/> <!-- Zero offset -->
+	</UnivariatePolynomial>
+</Fragment>

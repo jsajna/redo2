@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Digital accelerometer (+/-40g) -->
+    <DigitalSensorADXL357></DigitalSensorADXL357>
+</Fragment>

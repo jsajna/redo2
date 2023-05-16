@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Humidity -->
+    <DigitalSensorHTU21D></DigitalSensorHTU21D>
+</Fragment>

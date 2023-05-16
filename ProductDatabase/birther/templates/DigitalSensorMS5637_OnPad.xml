@@ -1,0 +1,6 @@
+<Fragment>
+    <!-- Pressure/Temperature -->
+    <DigitalSensorMS5637>
+      <SensorConfig value="0x20"/>
+    </DigitalSensorMS5637>
+</Fragment>

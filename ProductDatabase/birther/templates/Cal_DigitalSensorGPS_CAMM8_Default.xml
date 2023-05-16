@@ -1,0 +1,23 @@
+<Fragment>
+  <UnivariatePolynomial>
+      <!-- GPS longitude -->
+      <CalID value="89"/>
+      <CalReferenceValue value="0.0"/>
+      <PolynomialCoef value="0.0000001"/>
+      <PolynomialCoef value="0.0"/>
+  </UnivariatePolynomial>
+  <UnivariatePolynomial>
+      <!-- GPS latitude -->
+      <CalID value="90"/>
+      <CalReferenceValue value="0.0"/>
+      <PolynomialCoef value="0.0000001"/>
+      <PolynomialCoef value="0.0"/>
+  </UnivariatePolynomial>
+  <UnivariatePolynomial>
+      <!-- GPS speed -->
+      <CalID value="92"/>
+      <CalReferenceValue value="0.0"/>
+      <PolynomialCoef value="0.001"/>
+      <PolynomialCoef value="0.0"/>
+  </UnivariatePolynomial>
+</Fragment>

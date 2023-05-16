@@ -1,0 +1,3 @@
+<Fragment>
+    <DigitalSensorBMG250Int/>    <!-- Gyroscope with interrupt -->
+</Fragment>

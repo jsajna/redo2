@@ -1,0 +1,7 @@
+<Fragment>
+    <!-- IMU (for W) -->
+    <DigitalSensorBHI160>
+      <!-- Orientation for W devices: [0x03 0x03] -->
+      <SensorConfig value="0x0303"/>
+    </DigitalSensorBHI160>
+</Fragment>

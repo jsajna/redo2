@@ -1,0 +1,13 @@
+<Fragment>
+	<AnalogSensorInfo>
+		<AnalogSensorEntryID value="{sensor.sensorId}" />
+		<AnalogSensorDeviceCode value="1" />
+		<AnalogSensorSerialNumber value="{sensor.serialNumber}" />
+		<AnalogSensorUsesAAFilter value="1" />
+		<AnalogSensorSettlingTime value="16384" />
+		<AnalogSensorName value="{sensor.info.partNumber}" />
+		<AnalogSensorCalIDRef value="{sensor.calibrationId}" />
+		<AnalogSensorScaleHintI value="{sensor.info.scaleHint}" />
+		<AnalogSensorScaleHintF value="{sensor.info.scaleHint}" />
+	</AnalogSensorInfo>
+</Fragment>

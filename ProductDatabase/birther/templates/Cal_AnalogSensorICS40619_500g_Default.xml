@@ -1,0 +1,8 @@
+<Fragment>
+	<UnivariatePolynomial>
+		<CalID value="4"></CalID>
+		<CalReferenceValue value="0" />
+		<PolynomialCoef value="-0.010615061045558146" /> <!-- Convert from +/-500g range to Pa (0.002 * -5.307530522779073) -->
+		<PolynomialCoef value="0" />
+	</UnivariatePolynomial>
+</Fragment>

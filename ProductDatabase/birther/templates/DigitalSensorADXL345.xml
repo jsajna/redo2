@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Low-g accelerometer (+/-16g), r6+ and potentially some Slam Stick C variants -->
+    <DigitalSensorADXL345></DigitalSensorADXL345>
+</Fragment>

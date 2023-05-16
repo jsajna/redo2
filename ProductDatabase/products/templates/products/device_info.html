@@ -1,0 +1,102 @@
+<script>
+<!--  Copy manifest path to system clipboard -->
+  function copyToClipboard() {
+    var text = document.getElementById("path").innerText;
+    var elem = document.createElement("textarea");
+    document.body.appendChild(elem);
+    elem.value = text;
+    elem.select();
+    document.execCommand("copy");
+    document.body.removeChild(elem);
+    alert("Copied: " + elem.value)
+  }
+</script>
+
+<!--  Conditional header rendering and alert for invalid input-->
+{% if error %}
+    <script>alert("Invalid form error")</script>
+    <a href="search">
+        <h1 >{{ title }}</h1>
+    </a>
+{% else %}
+    <a href="search">
+        <h1 >{{ title }}</h1>
+    </a>
+{% endif %}
+
+<!--  passes form input to the birth_info in views.py -->
+<form action="{% url 'products:birth_info' %}">
+<!--  passes scripting token for security  -->
+    {% csrf_token %}
+<!--  adds form  -->
+    {{ form }}
+    <br>
+    <br>
+    {{ form2 }}
+    <br>
+    <br>
+    {{ form3 }}
+    <br>
+    <br>
+    {{ form4 }}
+    <br>
+    <br>
+    <input type="submit" value="Search" id="search">
+</form>
+
+{% if url %}
+    <!--  Says if the latest release of the device has been calibrated-->
+    {% if cal %}
+        <h3>This device has been calibrated</h3>
+    {% else %}
+        <h3>This device has not been calibrated</h3>
+    {% endif %}
+    <!--  Adds path link to manifests that allowed to be copied to clipboard-->
+    <div>
+        <pre onclick="copyToClipboard()" id="path">{{ url }}</pre>
+        <button onclick="copyToClipboard()">Copy text</button>
+    </div>
+{% endif %}
+
+<table>
+<!--  Table column titles  -->
+    <tr>
+        <th>ID</th>
+        <th>Serial Number</th>
+        <th>Part Number</th>
+        <th>Chip ID</th>
+        <th>Device Type</th>
+        <th>date</th>
+    </tr>
+<!--  Goes through all passed data and adds it to the table  -->
+    {% for b in data %}
+        <tr>
+            <td>{{ b.id }}</td>
+            <td>{{ b.serialNumber }}</td>
+            <td>{{ b.partNumber }}</td>
+            <td>{{ b.device.chipId }}</td>
+            <td>{{ b.device.hwType.name }}</td>
+            <td>{{ b.date }}</td>
+        </tr>
+    {% endfor %}
+</table>
+
+<!--  basic table styling  -->
+<style>
+table, th, td {
+  text-align: center;
+  border: 1px solid black;
+  border-collapse: collapse;
+  padding: 3;
+}
+h4 {
+    padding-bottom: 0px;
+}
+div {
+    padding-top: 0px;
+    padding-bottom: 10px;
+}
+a {
+    color: black;
+}
+</style>

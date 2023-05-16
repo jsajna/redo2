@@ -1,0 +1,6 @@
+<Fragment>
+    <!-- Humidity -->
+    <DigitalSensorHTU21D>
+      <SensorConfig value="0x20"/>
+    </DigitalSensorHTU21D>
+</Fragment>

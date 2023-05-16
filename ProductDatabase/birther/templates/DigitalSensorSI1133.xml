@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- Light sensor: Ambient and UV index -->
+    <DigitalSensorSI1133></DigitalSensorSI1133>
+</Fragment>

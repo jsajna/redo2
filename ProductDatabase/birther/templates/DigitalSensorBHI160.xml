@@ -1,0 +1,4 @@
+<Fragment>
+    <!-- IMU -->
+    <DigitalSensorBHI160></DigitalSensorBHI160>
+</Fragment>

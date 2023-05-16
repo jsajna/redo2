@@ -1,0 +1,21 @@
+<Fragment>
+    <!-- SI1133:Lux -->
+	<UnivariatePolynomial>
+		<CalID value="77"/>
+		<CalReferenceValue value="0"/>
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="1.0"/> <!-- Gain -->
+		<PolynomialCoef value="0.0"/> <!-- Zero offset -->
+	</UnivariatePolynomial>
+
+	<!-- SI1133:UV -->
+	<UnivariatePolynomial>
+		<CalID value="78"/>
+		<CalReferenceValue value="0"/>
+		<!-- Basic linear conversion; "y=mx+b" form -->
+		<!-- 2 coef block [A B]: y = A(x-xref) + B -->
+		<PolynomialCoef value="1.0"/> <!-- Gain -->
+		<PolynomialCoef value="0.0"/> <!-- Zero offset -->
+	</UnivariatePolynomial>
+</Fragment>

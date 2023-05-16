@@ -1,0 +1,6 @@
+<Fragment>
+    <!-- IMU -->
+    <DigitalSensorBHI160>
+      <SensorConfig value="0xFF00"/>
+    </DigitalSensorBHI160>
+</Fragment>
