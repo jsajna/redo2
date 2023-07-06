@@ -16,10 +16,12 @@ jobs:
           python-version: 3.9
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Install endaq.ide
+        run: pip install endaq.ide endaq.calc
       - name: Install pytest
         run: python -m pip install pytest pytest-lazy-fixture
       - name: Run Pytest
-        working-directory: ProductDatabase/birther
-        run: python -m pytest
+        working-directory: ProductDatabase
+        run: python -m pytest birther\test_cal.py
       - name: Print job status
         run: echo "Job status - ${{ job.status }}"
