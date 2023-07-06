@@ -22,6 +22,6 @@ jobs:
         run: python -m pip install pytest pytest-lazy-fixture
       - name: Run Pytest
         working-directory: ProductDatabase
-        run: python -m pytest birther\test_cal.py
+        run: python -m pytest
       - name: Print job status
         run: echo "Job status - ${{ job.status }}"
