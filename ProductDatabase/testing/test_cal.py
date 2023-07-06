@@ -340,9 +340,6 @@ class TestAverages:
         else:
             start += 3000000
             end -= 2000000
-        fig = go.Figure()
-        fig.add_scatter(x=sesh.arrayRange(start, end)[0], y=sesh.arrayRange(start, end)[1], mode='lines', name='shaved')
-        # fig.show()
         return sesh.arrayRange(start, end)[1].mean()
 
 
