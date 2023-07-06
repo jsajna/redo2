@@ -197,7 +197,7 @@ class TestAverages:
                 og_means[shaken] = self.mean_of_adjusted_shaken_sess(ch, shaken)
 
         print(f"\nMEANS OF DATA FOLLOWING HI ACCEL CALIBRATION of {name}")
-        print("GRAV: ", cal.deviceLibrary.gravities)
+        print("GRAV: ", cal.deviceInfo.gravities)
         print("OG: ", og_means)
         print("NEW: ", new_means)
         if pdf_gain and pdf_offset:
@@ -245,7 +245,7 @@ class TestAverages:
                 og_means[shaken] = self.mean_of_adjusted_shaken_sess(ch, shaken)
 
         print(f"\nMEANS OF DATA FOLLOWING LO ACCEL CALIBRATION of {name}")
-        print("GRAV: ", cal.deviceLibrary.gravities)
+        print("GRAV: ", cal.deviceInfo.gravities)
         print("OG: ", og_means)
         print("NEW: ", new_means)
 
@@ -286,10 +286,10 @@ class TestAverages:
             new_means[shaken] = self.mean_of_adjusted_shaken_sess(ch, shaken)
 
         print("\nNEW: ", new_means)
-        print("GRAV: ", cal.deviceLibrary.gravities)
-        assert isclose(new_means.x, cal.deviceLibrary.gravities.x, rel_tol=0.12)
-        assert isclose(new_means.y, cal.deviceLibrary.gravities.y, rel_tol=0.12)
-        assert isclose(new_means.z, cal.deviceLibrary.gravities.z, rel_tol=0.12)
+        print("GRAV: ", cal.deviceInfo.gravities)
+        assert isclose(new_means.x, cal.deviceInfo.gravities.x, rel_tol=0.12)
+        assert isclose(new_means.y, cal.deviceInfo.gravities.y, rel_tol=0.12)
+        assert isclose(new_means.z, cal.deviceInfo.gravities.z, rel_tol=0.12)
 
     @pytest.mark.parametrize("cal",
                              [(pytest.lazy_fixture("S2_D8D16")),
@@ -323,11 +323,11 @@ class TestAverages:
             new_means[shaken] = self.mean_of_adjusted_shaken_sess(ch, shaken)
 
         print("\nNEW: ", new_means)
-        print("GRAV: ", cal.deviceLibrary.gravities)
+        print("GRAV: ", cal.deviceInfo.gravities)
 
-        assert isclose(new_means.x, cal.deviceLibrary.gravities.x, rel_tol=0.12)
-        assert isclose(new_means.y, cal.deviceLibrary.gravities.y, rel_tol=0.12)
-        assert isclose(new_means.z, cal.deviceLibrary.gravities.z, rel_tol=0.12)
+        assert isclose(new_means.x, cal.deviceInfo.gravities.x, rel_tol=0.12)
+        assert isclose(new_means.y, cal.deviceInfo.gravities.y, rel_tol=0.12)
+        assert isclose(new_means.z, cal.deviceInfo.gravities.z, rel_tol=0.12)
 
     @staticmethod
     def mean_of_adjusted_shaken_sess(ch, shaken):
@@ -456,7 +456,7 @@ class TestKnownValues:
                              ])
     def test_PrimaryRMS(self, cal, rms):
         """ Compare the RMS of the high accel's selected shake """
-        hiId = cal.deviceLibrary.hiAccelId
+        hiId = cal.deviceInfo.hiAccelId
         assert isclose(cal.calFiles[0].accels[hiId].rms[0], rms.x, abs_tol=0.05)
         assert isclose(cal.calFiles[1].accels[hiId].rms[1], rms.y, abs_tol=0.05)
         assert isclose(cal.calFiles[2].accels[hiId].rms[2], rms.z, abs_tol=0.05)
@@ -484,7 +484,7 @@ class TestKnownValues:
                               ])
     def test_SecondaryRMS(self, cal, rms):
         """ Compare the RMS of the low accel's selected shake """
-        loId = cal.deviceLibrary.loAccelId
+        loId = cal.deviceInfo.loAccelId
         assert isclose(cal.calFiles[0].accels[loId].rms[0], rms.x, abs_tol=0.05)
         assert isclose(cal.calFiles[1].accels[loId].rms[1], rms.y, abs_tol=0.05)
         assert isclose(cal.calFiles[2].accels[loId].rms[2], rms.z, abs_tol=0.05)
@@ -518,7 +518,7 @@ class TestKnownValues:
                               ])
     def test_PrimaryMeans(self, cal, means):
         """ Compare the means of the high accel's quiet area """
-        hiId = cal.deviceLibrary.hiAccelId
+        hiId = cal.deviceInfo.hiAccelId
         assert isclose(cal.calFiles[0].accels[hiId].means, means.x, abs_tol=0.05)
         assert isclose(cal.calFiles[1].accels[hiId].means, means.y, abs_tol=0.05)
         assert isclose(cal.calFiles[2].accels[hiId].means, means.z, abs_tol=0.05)
@@ -548,7 +548,7 @@ class TestKnownValues:
                               ])
     def test_SecondaryMeans(self, cal, means):
         """ Compare the means of the low accel's quiet area """
-        loId = cal.deviceLibrary.loAccelId
+        loId = cal.deviceInfo.loAccelId
         assert isclose(cal.calFiles[0].accels[loId].means, means.x, abs_tol=0.05)
         assert isclose(cal.calFiles[1].accels[loId].means, means.y, abs_tol=0.05)
         assert isclose(cal.calFiles[2].accels[loId].means, means.z, abs_tol=0.05)
