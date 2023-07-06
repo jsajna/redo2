@@ -304,14 +304,18 @@ class Birth(models.Model):
         help_text=("The ID/number of the order that included this device. "
                    "If not built to order, update after sale."))
 
+    birtherVersion = models.CharField(max_length=16, blank=True,
+        help_text=("The version number string of the ProductDatabase_Django "
+                   "scripts used in the birth."))
+
     notes = models.TextField(blank=True,
         help_text="General notes about the birth.")
 
 
     def __str__(self):
-        pn = self.product or "[Unspecified Product Type!]"
-        if self.device and self.device.hwType:
-            pn = "%s HwRev %s" % (pn, self.device.hwType.hwRev)
+        pn = self.product or "[Missing Product Type!]"
+        rev = self.device.hwRevStr if self.device else "[Mising Device!]"
+        pn = f"{pn} {rev}"
 
         if not self.serialNumber or self.serialNumber < 0:
             if self.notes:
@@ -323,7 +327,7 @@ class Birth(models.Model):
             except (AttributeError, TypeError):
                 sn = self.serialNumber
             sn = "SN:%s" % sn
-        return "%s %s" % (pn, sn)
+        return f"{pn} {sn}"
 
 
     # ==========================================================================
@@ -540,13 +544,16 @@ class DeviceType(models.Model):
 
     @property
     def hwRevStr(self):
-        """ The hardware's revision number, formatted.
+        """ The hardware's revision number, formatted. Old-style HwRev
+            (less than 100) are shown verbatim.
         """
         rev = self.hwRev
         try:
+            # Modern bard HwRev are (version * 100) + revision, turned
+            # into (((version * 100) + revision) * 100) + BOM in manifest
             if rev > 99:
-                major = int(rev/10000)
-                minor = int((rev % 10000) / 100)
+                major = int(rev // 100)
+                minor = int(rev % 100)
                 rev = f"v{major}r{minor}"
         except TypeError:
             pass
@@ -554,7 +561,7 @@ class DeviceType(models.Model):
 
 
     def __str__(self):
-        return "%s rev %s" % (self.name, self.hwRev)
+        return f"{self.name} rev {self.hwRev} ({self.mcu})"
 
 
 class Device(models.Model):
@@ -585,7 +592,7 @@ class Device(models.Model):
                        (ENCLOSURE_W8,       "W8 Enclosure (AL/PC)"),
                        (ENCLOSURE_OTHER,    "Other"))
 
-    BOM_REVS = tuple(enumerate(" ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    BOM_REVS = tuple(enumerate(" BCDEFGHIJKLMNOPQRSTUVWXYZ"))
 
     # XXX: Should the chipId be forced to be unique? Can I generate the UUID
     #  used in ENDAQ H module EEPROM, or will it come from Pete?
@@ -621,9 +628,12 @@ class Device(models.Model):
 
     def __str__(self):
         # Is including a foreign key in __str__ a bad idea (overhead, etc.)?
-        idStr = ("ID:%s" % self.chipId) if self.chipId else "(No ID)"
-        typeStr = str(self.hwType) if self.hwType else "[Unknown HW Type!]"
-        return "%s %s" % (typeStr, idStr)
+        idStr = f"ID:{self.chipId}" if self.chipId else "(No ID)"
+        if self.hwType:
+            typeStr = f"{self.hwType.name} {self.hwRevStr} ({self.hwType.mcu})"
+        else:
+            typeStr ="[Missing hwType!]"
+        return f"{typeStr} {idStr}"
 
 
     # ==========================================================================
@@ -682,6 +692,19 @@ class Device(models.Model):
 
 
     @property
+    def bomStr(self):
+        """ The BOM revision as a string. 0 is null string, 1-26 are A-Z.
+            27+ are double letters (AA, BB, etc.), if we ever get that far.
+        """
+        bom = self.bomRev
+        if bom == 0:
+            return ''
+        if bom > 25:
+            return chr((bom % 25)+64) * int((bom // 25 + 1))
+        return chr(bom + 65)
+
+
+    @property
     def hwRev(self):
         """ The hardware's revision number.
         """
@@ -696,17 +719,22 @@ class Device(models.Model):
     @property
     def hwRevStr(self):
         """ The hardware's revision number, formatted. Includes BOM revision.
+            Old-style HwRev (less than 100) are shown verbatim (plus BOM).
         """
         rev = self.hwRev
+        bom = self.bomRev
         try:
             if rev > 99:
                 major = int(rev/10000)
                 minor = int((rev % 10000) / 100)
-                bom = rev % 100
-                rev = f"v{major}r{minor}{chr(bom+64) if bom > 0 else ''}"
+                rev = f"v{major}r{minor}"
+            else:
+                rev = f"HwRev {rev}"
+
         except TypeError:
             pass
-        return str(rev)
+
+        return f"{rev}{self.bomStr}"
 
 
     @property
@@ -1465,6 +1493,10 @@ class CalSession(models.Model):
     completed = models.BooleanField(default=True,
         help_text="Did the calibration process complete successfully? Note: may not be accurate for old sessions.")
 
+    birtherVersion = models.CharField(max_length=16, blank=True,
+        help_text=("The version number string of the ProductDatabase_Django "
+                   "scripts used in the calibration."))
+
     notes = models.TextField(blank=True,
         help_text="General notes about the calibration.")
 
@@ -1475,7 +1507,7 @@ class CalSession(models.Model):
             if self.device:
                 b = self.device.getLastBirth()
                 if b and b.serialNumber > 0:
-                    s = f'{s}, {b.serialNumberString} '
+                    s = f'{s}, {b.serialNumberString}'
             if self.date:
                 s = f'{s}, {self.date.date()}'
             return s

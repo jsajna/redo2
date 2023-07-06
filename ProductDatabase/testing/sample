@@ -1,0 +1,15 @@
+ProductDatabase/
+    birther/
+        __init__.py
+        calibration.py
+        util.py
+        paths.py
+        ... other .py's
+
+    testing/
+        __init__.py
+        test_cal.py
+        ... some IDE files
+
+    run_cal_wizard.py
+    ... other .py's

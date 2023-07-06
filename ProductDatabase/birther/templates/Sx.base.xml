@@ -1,12 +1,12 @@
 <DeviceManifest>
 	<SystemInfo>
-		<SerialNumber value="{birth.serialNumber}" />
+		<SerialNumber value="{serialNumber}" />
 		<DateOfManufacture value="{birth.device.timestamp}" />
 		<DeviceTypeUID value="0x{birth.typeUID:08X}" />
-		<ProductName value="{birth.productName}" />
-		<HwRev value="{device.hwRev}" />
-		<MinFwRev value="{device.minFwRev}" />
-		<PartNumber value="{birth.partNumber}" />
+		<ProductName value="{productName}" />
+		<HwRev value="{hwRev}" />
+		<MinFwRev value="{minFwRev}" />
+		<PartNumber value="{partNumber}" />
     <BatchIDStr value="{device.batchId}" />
 	</SystemInfo>
 

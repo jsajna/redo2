@@ -14,6 +14,7 @@ __author__ = "dstokes"
 __copyright__ = "Copyright 2023 Mide Technology Corporation"
 
 import errno
+from functools import partial
 import getpass
 from glob import glob
 import json
@@ -34,6 +35,7 @@ import wx.adv
 
 # Set up paths. Import even if it isn't used directly. Important! Do early!
 from . import paths
+from . import __version__
 
 #===============================================================================
 #--- Logging setup: Done early to set up for other modules
@@ -78,8 +80,9 @@ from . import labels
 from . import legacy
 from .template_generator import ManifestTemplater, DefaultCalTemplater
 from . import util
-from .util import makeBackup, restoreBackup, renameVolume, readFile
-from .util import safeCopy, safeRemove, safeRmtree, getCardSize
+from .util import (makeBackup, restoreBackup, renameVolume, readFile,
+                   safeCopy, safeRemove, safeRmtree, getCardSize, setTime,
+                   retryLoop, getGitInfo)
 
 # To be removed after `firmware` merged with SlamStickLab
 from firmware import FirmwareUpdater, FirmwareFileUpdater, FirmwareFileUpdaterGG11
@@ -794,7 +797,7 @@ class PickExamplePage(TitledPage, listmix.ColumnSorterMixin):
             if self.lastBirth:
                 # Show the previous birth product type
                 prev = "%s HwRev %s" % (self.data.lastBirth.product, 
-                                        self.data.lastDevice.hwRev)
+                                        self.data.lastDevice.hwRevStr)
                 self.addBoldLabel("(Previous type: ", prev, ")")
 
         else:
@@ -1659,7 +1662,7 @@ class FirmwareWidget(SC.SizedPanel):
         self.fileBtn = wx.RadioButton(self, -1, "Upload File:")
         self.fileBtn.SetSizerProps(valign="center")
         self.fileField = FB.FileBrowseButtonWithHistory(self, -1,
-            labelText="", buttonText=buttonText, fileMask="*.bin", 
+            labelText="", buttonText=buttonText, #  fileMask="*.bin",
             startDirectory=startDirectory, changeCallback=self.OnFilePicked,
             dialogTitle="Choose a %s file" % self.type)
         self.fileField.SetSizerProps(valign="center", expand=True)
@@ -1932,7 +1935,9 @@ class FinalPage(TitledPage):
 
         self.configFiles = self.app.configs[:]
         self.configNames = [os.path.basename(f) for f in self.configFiles]
-        
+
+        self.chainPrint = self.app.prefs.get('chainPrint', True)
+
 
     def updateData(self):
         """ Update the parent's info based on the page contents.
@@ -1950,6 +1955,8 @@ class FinalPage(TitledPage):
         parent.keepOldCal = self.keepCalCheck.GetValue()
         parent.configDevice = self.configCheck.GetValue()
         parent.printLabel = self.printCheck.GetValue()
+
+        self.app.prefs['chainPrint'] = self.chainPrintCheck.GetValue()
  
         return True
         
@@ -2023,6 +2030,11 @@ class FinalPage(TitledPage):
         self.printCheck.Bind(wx.EVT_CHECKBOX, self.OnPrintCheck)
         self.skuField.Bind(wx.EVT_CHAR, self.OnSkuCharacter)
 
+        self.chainPrintCheck = wx.CheckBox(configpane, -1, "Chain Print")
+        self.chainPrintCheck.SetToolTip("Don't automatically cut the last label. "
+                                        "Saves tape when calibrating multiple devices.")
+        wx.Panel(configpane, -1)
+
         self.copyConfigCheck = wx.CheckBox(configpane, -1, "Install config file:")
         self.copyConfigCheck.SetSizerProps(valign="center")
         self.copyConfigField = wx.Choice(configpane, choices=self.configNames)
@@ -2080,7 +2092,8 @@ class FinalPage(TitledPage):
         self.copyCheck.SetValue(parent.copyContent)
         
         self.printCheck.SetValue(self.printLabel)
-#         self.skuLabel.Enable(self.printLabel)
+        self.chainPrintCheck.SetValue(self.chainPrint)
+        self.chainPrintCheck.Enable(self.printLabel)
         self.skuField.Enable(self.printLabel)
 
 
@@ -2106,8 +2119,8 @@ class FinalPage(TitledPage):
 
     def OnPrintCheck(self, evt):
         checked = evt.IsChecked()
-#         self.skuLabel.Enable(checked)
         self.skuField.Enable(checked)
+        self.chainPrintCheck.Enable(checked)
 
 
     def OnNameCharacter(self, evt):
@@ -2586,6 +2599,7 @@ class BirthData(object):
                                        serialNumber=self.serialNumber,
                                        rebirth=self.rebirth,
                                        date=now,
+                                       birtherVersion=__version__,
                                        firmware=self.firmware,
                                        fwRev=self.fwRev,
                                        bootloader=self.bootloader,
@@ -2776,7 +2790,7 @@ class BirtherApp(wx.App):
         self.bootloaders = self.getBootloaderDirs()
         
         self.configs = self.getConfigFiles()
-        
+
         keepGoing = True
         while keepGoing:
             # These get set according to failure or success
@@ -2951,8 +2965,8 @@ class BirtherApp(wx.App):
         for example in q:
             partNumber = str(example.product.partNumber or "")
             name = str(example.product.name or "")
-            hwRev = "{} rev {}".format(str(example.device.hwType.name).partition(':')[0],
-                                       example.device.hwType.hwRev)
+            hwRev = "{} {}".format(str(example.device.hwType.name).partition(':')[0],
+                                       example.device.hwRevStr)
             hasSerials = example.device.getSensors(info__hasSerialNumber=True)
             examples[example.id] = (partNumber, name, hwRev, hasSerials, example)
     
@@ -3453,13 +3467,18 @@ class BirtherApp(wx.App):
         confList.setdefault('RecorderConfigurationItem', confItems)
 
         channels = dev.getChannels()
-        
+
+        # Analog accelerometer (ch8, 0x08): enable and sample rate
+        if 8 in channels:
+            confItems.append({'ConfigID': 0x01ff08, 'UIntValue': 7})
+            confItems.append({'ConfigID': 0x02ff08, 'UIntValue': 5000})
+
         # Digital accelerometer 1 (ch32, 0x20): enable and sample rate
         if 32 in channels:
             confItems.append({'ConfigID': 0x01ff20, 'UIntValue': 1})
             confItems.append({'ConfigID': 0x02ff20, 'UIntValue': 3200})
 
-        # Digital accelerometer 1 (ch80, 0x50): enable and sample rate
+        # Digital accelerometer 2 (ch80, 0x50): enable and sample rate
         if 80 in channels:
             confItems.append({'ConfigID': 0x01ff50, 'UIntValue': 1})
             confItems.append({'ConfigID': 0x02ff50, 'UIntValue': 4000})
@@ -3476,6 +3495,10 @@ class BirtherApp(wx.App):
         # Light sensor (ch76, 0x4c): enable
         if 76 in channels:
             confItems.append({'ConfigID': 0x01ff4c, 'UIntValue': 1})
+
+        # Gyro (ch84, 0x54): enable
+        if 84 in channels:
+            confItems.append({'ConfigID': 0x01ff54, 'UIntValue': 1})
 
         with open(dev.configFile, 'wb') as f:
             uiSchema.encode(f, conf)
@@ -3580,32 +3603,7 @@ class BirtherApp(wx.App):
             elif os.path.exists(config):
                 logger.warning("Could not remove old %s" % config)
 
-    
-    def printLabel(self, data, printer=None):
-        """ Print the birth label.
-        
-            @param data: The device's `BirthData`.
-            @param printer: The name of the printer, if not the default.
-        """
-        try:
-            while not labels.canPrint(printer):
-                # Note: PLite LED is specific to PT-P700
-                q = wx.MessageBox("The label printer could not be found.\n\n"
-                                  "Make sure it is attached, turned on, "
-                                  'and the "PLite" LED is off.\n\n'
-                                  "Try again?", "Label Printing Error",
-                                  wx.YES_NO | wx.ICON_ERROR)
-                if q == wx.NO:
-                    return
-                
-            labels.printBirthLabel(data.sku, data.birth.serialNumberString)
-            
-        except RuntimeError:
-            wx.MessageBox("The printer SDK components could not be loaded.\n\n"
-                          "Have they been installed?", "Label Printing Error",
-                          wx.OK | wx.ICON_ERROR)
-        
-         
+
     def birthWithWizard(self, fw, chipId=None, bootloader=None, mcu=None,
                         doLegacy=True):
         """ Perform the birthing, using the wizard.
@@ -3702,7 +3700,7 @@ class BirtherApp(wx.App):
                 pd.Update(step, "Updating database...")
                 # Will also update `data.birth`, used below
                 data.updateDatabase()
-            
+
             mt = ManifestTemplater(data.birth)
             ct = DefaultCalTemplater(data.birth)
 
@@ -3785,7 +3783,8 @@ class BirtherApp(wx.App):
             step += 1
             if printLabel:
                 pd.Update(step, "Printing Label...")
-                self.printLabel(data)
+                labels.printLabels(dev, name=data.sku,
+                                   chain=self.prefs.get('chainPrint', True))
 
             step += 1
             if data.volumeName:
@@ -3795,10 +3794,6 @@ class BirtherApp(wx.App):
                 else:
                     # TODO: Show volume name failure error dialog (maybe)
                     logger.error('Failed to rename volume!')
-    
-            step += 1
-            pd.Update(step, "Setting device clock...")
-            dev.setTime()
     
             step += 1
             if configDevice:
@@ -3819,13 +3814,6 @@ class BirtherApp(wx.App):
                 pd.Pulse("Making empty content directories...")
                 util.makeContentDirs(dev)
             
-#             # Attempt to eject the drive.
-#             pd.Pulse("Preparing %s for removal..." % dev.path)
-#             try:
-#                 ejectDrive(dev.path)
-#             except Exception as err:
-#                 logger.error("Failed to eject drive: %s" % err)
-            
             # Force Recorder to have new serial number (for display)
             # Can be wrong after a previous bad birth
             dev._snInt = data.birth.serialNumber
@@ -3835,9 +3823,17 @@ class BirtherApp(wx.App):
                 data.birth.completed = True
                 data.birth.save()
 
+            step += 1
+            pd.Update(step, "Setting device clock...")
+            retryLoop("setting device clock",
+                      partial(setTime, dev),
+                      fatal=False,
+                      suggestion="Try unplugging and re-plugging the device from USB.")
+
             return dev
-            
+
         finally:
+            logger.info('Completing and cleaning up...')
             pd.Close()
             pd.Destroy()
 
@@ -3846,18 +3842,23 @@ class BirtherApp(wx.App):
 # 
 #===============================================================================
 
-if __name__ == "__main__":
-    try:
-        from git.repo import Repo
+def main():
+    from . import __version__
 
-        repo = Repo('..')
-        commit = next(repo.iter_commits())
-        logger.info("%s: branch %s, commit %s" % (os.path.basename(__file__),
-                                                  repo.active_branch.name,
-                                                  commit.hexsha[:7]))
-        logger.info("Commit date: %s" % commit.authored_datetime)
+    logger.info(f"** Starting Birth-o-Matic {__version__}: the Birth Wizard! **")
+
+    try:
+        logger.info(getGitInfo(__file__))
     except Exception as err:
         logger.error("Could not get git information! Exception: %s" % err)
 
     app = BirtherApp(False)
     app.MainLoop()
+
+
+#===============================================================================
+#
+#===============================================================================
+
+if __name__ == "__main__":
+    main()

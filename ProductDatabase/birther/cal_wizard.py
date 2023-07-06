@@ -9,10 +9,10 @@ Created on Sep 5, 2019
 """
 
 from datetime import datetime
+from functools import partial
 import json
 import os.path
 import subprocess
-import tempfile
 import time
 
 import wx
@@ -50,8 +50,9 @@ from . import cal_util
 from .firmware import FirmwareFileUpdater, FirmwareFileUpdaterGG11
 from . import labels
 
-from .util import copyContent, makeBackup, restoreBackup, deepCopy  # , ejectDrive
-from .util import allInRange, inRange
+from .util import (copyContent, makeBackup, restoreBackup, deepCopy,
+                   allInRange, inRange, setTime, retryLoop, getRecorder,
+                   getGitInfo)
 
 from .template_generator import CalCertificateTemplater, CalTemplater
 from .generate_userpage import generateUserpage
@@ -98,6 +99,7 @@ class CalInfoDialog(SC.SizedDialog):
         self.certificates = kwargs.pop('certificates', [])
         
         self.printLabel = kwargs.pop('printLabel', True) and self.canPrint
+        self.chainPrint = kwargs.pop('chainPrint', True)
         self.cleanDevice = kwargs.pop('cleanDevice', True)
         self.cleanWorkDir = kwargs.pop('cleanWorkDir', True)
         self.copyContent = kwargs.pop('copyContent', True)
@@ -219,6 +221,9 @@ class CalInfoDialog(SC.SizedDialog):
         actpane.SetSizerProps(border=(["left"], 8))
         self.labelCheck = _check(actpane, "Print Label",
             "Print the calibration label (serial number and date).")
+        self.chainPrintCheck = _check(actpane, "Chain print",
+            "Don't automatically cut the last label. "
+            "Saves tape when calibrating multiple devices.")
         self.cleanCheck = _check(actpane, "Clean Device",
             "Remove calibration recordings and config data after calibration. "
             "If a recalibration, restore old settings.\n"
@@ -239,6 +244,8 @@ class CalInfoDialog(SC.SizedDialog):
         self.chkdskCheck = _check(actpane, "Run chkdsk on drive",
              "Run the 'chkdsk' command to fix any disk error notifications.\n"
              "Performed at the very end.")
+
+        self.labelCheck.Bind(wx.EVT_CHECKBOX, self.OnLabelCheck)
 
 
     def populate(self):
@@ -266,12 +273,14 @@ class CalInfoDialog(SC.SizedDialog):
             
         self.humField.SetValue(self.humidity)
         if self.fromFile:
-            self.humLabel.SetLabelText("From recording: {self.humidity:.2f}")
+            self.humLabel.SetLabelText(f"From recording: {self.humidity:.2f}")
         else:
-            self.humLabel.SetLabelText("Last used: {self.humidity:.2f}")
+            self.humLabel.SetLabelText(f"Last used: {self.humidity:.2f}")
 
         self.labelCheck.SetValue(self.printLabel)
-#         self.labelCheck.Enable(self.canPrint)
+        #         self.labelCheck.Enable(self.canPrint)
+        self.chainPrintCheck.SetValue(self.chainPrint)
+        self.chainPrintCheck.Enable(self.labelCheck.GetValue())
         self.cleanCheck.SetValue(self.cleanDevice)
         self.workCheck.SetValue(self.cleanWorkDir)
         self.copyCheck.SetValue(self.copyContent)
@@ -279,6 +288,11 @@ class CalInfoDialog(SC.SizedDialog):
         self.writeCheck.SetValue(self.writeUserpage)
         self.chkdskCheck.SetValue(self.runChkdsk)
         
+
+    def OnLabelCheck(self, evt):
+        """ Handle UI changes when 'print label' is checked or unchecked. """
+        self.chainPrintCheck.Enable(self.labelCheck.GetValue())
+
 
     def getValues(self):
         """ Get values selected in dialog.
@@ -302,6 +316,7 @@ class CalInfoDialog(SC.SizedDialog):
         hum = self.humField.GetValue()
         
         actions = {'printLabel': self.labelCheck.GetValue(),
+                   'chainPrint': self.chainPrintCheck.GetValue(),
                    'copyContent': self.copyCheck.GetValue(),
                    'cleanDevice': self.cleanCheck.GetValue(),
                    'cleanWorkDir': self.workCheck.GetValue(),
@@ -560,12 +575,11 @@ class CalApp(wx.App):
         def findDrive(*args):
             if endaq.device.deviceChanged():
                 for dev in endaq.device.getDevices():
-                    # TODO: Add extra test for recorder in calibration?
                     return dev
             return None
         
         status, dev = BusyBox.run(findDrive, "Waiting for Device...",
-                                   "Attach a recorder via USB now.")
+                                  "Attach a recorder via USB now.")
 
         if not dev:
             if status == wx.ID_CANCEL:
@@ -598,27 +612,6 @@ class CalApp(wx.App):
 
 
     @classmethod
-    def getRecorder(cls, serialNumber):
-        """ Wait for a recorder to reboot and appear as a USB disk.
-            
-            @param serialNumber: The serial number of the expected device.
-        """
-        # Force cache of known drive letters to clear (recorder may already be
-        # present as a USB disk).
-        # endaq.device._LAST_RECORDERS = None
-
-        deadline = time.time() + cls.REBOOT_TIMEOUT
-        
-        while time.time() < deadline:
-            if endaq.device.deviceChanged():
-                for dev in endaq.device.getDevices():
-                    if dev.serialInt == serialNumber:
-                        return dev
-            wx.Yield()
-            time.sleep(.25)
-    
-
-    @classmethod
     def waitForEject(cls, dev):
         """
         """
@@ -634,35 +627,6 @@ class CalApp(wx.App):
             time.sleep(0.25)
         
         return False
-        
-
-    #===========================================================================
-    # 
-    #===========================================================================
-    
-    def printLabel(self, session, printer=None):
-        """ Print the calibration label.
-        
-            @param session: The current `products.models.CalSession`.
-            @param printer: The name of the printer, if not the default.
-        """
-        try:
-            while not labels.canPrint(printer):
-                # Note: PLite LED is specific to PT-P700
-                q = wx.MessageBox("The label printer could not be found.\n\n"
-                                  "Make sure it is attached, turned on, "
-                                  'and the "PLite" LED is off.\n\n'
-                                  "Try again?", "Label Printing Error",
-                                  wx.YES_NO | wx.ICON_ERROR)
-                if q == wx.NO:
-                    return
-                
-            labels.printCalLabel(session.sessionId, session.date)
-            
-        except RuntimeError:
-            wx.MessageBox("The printer SDK components could not be loaded.\n\n"
-                          "Have they been installed?", "Label Printing Error",
-                          wx.OK | wx.ICON_ERROR)
 
     
     #===========================================================================
@@ -687,7 +651,6 @@ class CalApp(wx.App):
             # Database probably not updated yet. Continue.
             pass
         
-        # XXX: TODO: Re-enable calibration log writing?
 #         legacy.writeCalibrationLog(cal, err=failure, writeCalNumber=False)
 
 
@@ -713,8 +676,21 @@ class CalApp(wx.App):
             @param dev: The current device.
             @param maxDrift: The maximum allowable clock drift, in seconds.
         """
-        # TODO: Check log files (GG11 only?)
-        
+        # TODO: Check log files (GG11/STM32 only?)
+
+        if dev.isVirtual:
+            # Just in case. Probably not necessary now, but might be later.
+            logger.info('Device is virtual, skipping hardware checks.')
+            return True
+
+        if os.path.exists(dev.userCalFile):
+            msg = ["Device has a usercal.dat file!", "",
+                   "The files on the device may have been recorded with user calibration.",
+                   "The recordings may not produce usable calibration."]
+            if self._cancelCalPrompt(dev, msg):
+                logger.error('Device has usercal.dat file; calibration aborted!')
+                return False
+
         # Validate device clock
         try:
             drift = dev.getClockDrift()
@@ -730,11 +706,11 @@ class CalApp(wx.App):
             logger.error(f"Extreme clock drift: {drift:0.2}; calibration aborted!")
             # TODO: Write to database?
             return False
-        
+
         # Passed!
         return True
-        
-    
+
+
     def validateCalibration(self, cal, transMax=MAX_TRANSVERSE, 
                             calRange=VALID_CAL_RANGE,
                             pressRange=VALID_PRESS_RANGE,
@@ -750,14 +726,30 @@ class CalApp(wx.App):
             @return: `True` if calibration should continue, `False` if not.
         """
 
-        name = f"{cal.dev.productName}, SN:{cal.dev.serial}"
+        devname = f"{cal.dev.productName}, SN:{cal.dev.serial}"
 
-        def _cancelCalPrompt(msgList):
-            """ Helper function to reduce prompting to quit to one line. """
-            msg = "\n".join(msgList) + (f"\n\nContinue calibrating {name}?")
-            q = wx.MessageBox(msg, "Possible Calibration Problem",
-                              wx.YES_NO | wx.ICON_WARNING)
-            return q == wx.NO
+        def _cancelCalPrompt(msgList, fatal=False):
+            """ Helper function to reduce prompting to quit to one line.
+                `True` means cancel.
+            """
+            msg = "\n".join(msgList)
+
+            if fatal:
+                msg += f"\n\nCalibration of {devname} aborted."
+                wx.MessageBox(msg, "Fatal Calibration Problem",
+                              wx.OK | wx.ICON_ERROR)
+
+                # Allow even fatal errors to be ignored if Ctrl+Shift pressed
+                if wx.GetKeyState(wx.WXK_CONTROL) and wx.GetKeyState(wx.WXK_SHIFT):
+                    return False
+
+                return True
+
+            else:
+                msg += f"\n\nContinue calibrating {devname}?"
+                q = wx.MessageBox(msg, "Possible Calibration Problem",
+                                  wx.YES_NO | wx.ICON_WARNING)
+                return q == wx.NO
         
         # Validate recording times
         now = time.time()
@@ -781,27 +773,33 @@ class CalApp(wx.App):
         # Validate transverse
         if None in cal.trans:
             msg = ["Error in calculating transverse sensitivity!",
-                   "",
-                   "Only found the following:"]
+                   ""]
             for i, trans in enumerate(cal.trans):
+                axes = ("XY", "YZ", "ZX")[i]
+                name = os.path.basename(cal.calFiles[i].filename)
                 if trans is not None:
-                    name = os.path.basename(cal.calFiles[i].filename)
-                    axes = ("XY", "YZ", "ZX")[i]
                     msg.append(f"    \u2022 {name}, Transverse Sensitivity in {axes} = {trans:.2f}%")
+                else:
+                    msg.append(f"    \u2022 {name}, Transverse Sensitivity in {axes} = {trans} !!!")
             
             if _cancelCalPrompt(msg):
                 self.logFailure(cal, "Bad transverse sensitivity")
                 return False
-        
-        if any((x > transMax for x in cal.trans)):
+
+        # High, but potentially not fatal value
+        badTrans = transMax * 0.8
+
+        if any((x > badTrans for x in cal.trans)):
             msg = ["Extreme transverse sensitivity detected!", ""]
             for i, trans in enumerate(cal.trans):
-                if trans > transMax:
+                if trans > badTrans:
                     name = os.path.basename(cal.calFiles[i].filename)
                     axes = ("XY", "YZ", "ZX")[i]
                     msg.append(f"    \u2022 {name}, Transverse Sensitivity in {axes} = {trans:.2f}%")
-            
-            if _cancelCalPrompt(msg):
+
+            fatal = any((x > transMax for x in cal.trans))
+
+            if _cancelCalPrompt(msg, fatal=fatal):
                 self.logFailure(cal, "Extreme transverse sensitivity")
                 return False
     
@@ -950,19 +948,21 @@ class CalApp(wx.App):
         """ Update the progress dialog, showing current step.
         """
         logger.info(msg)
-        dev = self.lastCal.dev
-        
-        if dev.productName != dev.partNumber:
-            name = f"{dev.productName} ({dev.partNumber})"
+
+        dev = getattr(self.lastCal, 'dev', None)
+        if dev is not None:
+            if dev.productName != dev.partNumber:
+                name = f"{dev.productName} ({dev.partNumber})"
+            else:
+                name = f"{dev.partNumber}"
         else:
-            name = f"{dev.partNumber}"
-        
-        name = f"Calibrating {name}, SN:{dev.serial}\n\n{msg}"
-        
+            name = "device"
+
+        msg = f"Calibrating {name}\n\n{msg}"
         if step:
-            self.pd.Update(name, step)
+            self.pd.Update(msg, step)
         else:
-            self.pd.Pulse(name)
+            self.pd.Pulse(msg)
             
     
     def calibrateWithWizard(self, dev):
@@ -990,7 +990,21 @@ class CalApp(wx.App):
         # PROLOGUE: GET UI DEFAULTS FROM PREFERENCES ==========================
         actions = self.prefs.setdefault('postCalActions', {})
         humidity = self.prefs.get('humidity', calibration.DEFAULT_HUMIDITY)
-        
+
+        # POST-PROLOGUE: SET CLOCK ============================================
+        self.updateProgress("Setting device clock...")
+        try:
+            retryLoop("setting device clock",
+                      partial(setTime, dev),
+                      suggestion="Try unplugging and re-plugging the device from USB.")
+
+        except (IOError, WindowsError, endaq.device.DeviceError) as err:
+            logger.error(f"Failed to set clock! {err!r}")
+            wx.MessageBox('Could not set device clock!\n\n'
+                          f'Error:\n{err!r}\n\n'
+                          "Put this device aside after chkdsk finishes running.",
+                          'Device Error', wx.OK | wx.ICON_ERROR)
+
         # 0: CREATE CALIBRATOR ================================================
         logger.info("Step 0: Create Calibrator")
         cal = calibration.Calibrator(dev)
@@ -1072,7 +1086,7 @@ class CalApp(wx.App):
         # 8.1: COPY CALIBRATION TO CHIP DIR
         self.updateProgress("Step 8.1: Copy calibration to device chip directory")
         cal_util.copyCal(cal)
-        
+
         # 9: INSTALL NEW MANIFEST and REBOOT =================================
         if actions.get('writeUserpage', True):
             self.updateProgress("Step 9: Install manifest and new calibration and reboot")
@@ -1083,13 +1097,13 @@ class CalApp(wx.App):
             wx.MilliSleep(250)
             
             # TODO: Fail if the recorder doesn't disconnect after a time?
-            dev = self.getRecorder(dev.serialInt)
+            dev = getRecorder(dev.serialInt, self.REBOOT_TIMEOUT)
             if dev is None:
                 # Timed out!
                 logger.error('Timed out waiting for device in disk mode!')
                 wx.MessageBox(f"Reboot timed out!\n\nRecorder did not appear "
-                              f"as a drive after {self.REBOOT_TIMEOUT} seconds."
-                              "\nCalibration may have failed.",
+                              f"as a drive after {self.REBOOT_TIMEOUT} seconds.\n"
+                              "Calibration may have failed.",
                               "Reboot Timeout",
                               wx.OK | wx.ICON_ERROR)
                 return None
@@ -1102,18 +1116,12 @@ class CalApp(wx.App):
             cal_util.cleanRecorder(dev)
         else:
             logger.debug("Skipping Step 10: Clean device")
-        
-        self.updateProgress("Setting the clock...")
-        try:
-            dev.command.setTime()
-        except (IOError, WindowsError) as err:
-            # TODO: report that clock could not get set?
-            logger.error(f"Failed to set clock! {err!r}")
-            
+
         # 11: PRINT LABEL (optional) ==========================================
         if actions.get('printLabel', True):
             self.updateProgress("Step 11: Print Label")
-            self.printLabel(session)
+            labels.printLabels(dev, session=session,
+                               chain=actions.get('chainPrint', True))
         else:
             logger.debug("Skipping Step 11: Print Label")
         
@@ -1136,8 +1144,8 @@ class CalApp(wx.App):
         #     logger.error(f"Failed to eject drive: {err}")
         
         # X: FINISHING ========================================================
-        self.updateProgress("Finished!")
-        
+        self.updateProgress("Wrapping up...")
+
         # Keep data to use as defaults for next birth
         self.prefs['humidity'] = humidity
         self.prefs['postCalActions'] = actions
@@ -1147,11 +1155,43 @@ class CalApp(wx.App):
 
         # Y: CHECK DISK FOR ERRORS =============================================
         if actions.get('runChkdsk', True):
-            cmd = ['chkdsk.exe', dev.path, '/offlinescanandfix']
-            logger.info('Executing:', ' '.join(cmd))
+            self.updateProgress("Running chkdsk... check console output for prompt!")
+            # Note: /X and /freeOrphanedChains may be redundant with /offlineScanAndFix,
+            #  but do it anyway, just in case. It may reduce user prompts and make things
+            #  more automatic.
+            cmd = ['chkdsk.exe', dev.path, '/X', '/offlinescanandfix', '/freeorphanedchains']
+            logger.info(f"Executing: {' '.join(cmd)}")
             subprocess.call(cmd, shell=True)
 
         # Z: DONE! =============================================================
         logger.info(f'*** Completed calibration of {dev}')
 
         return True
+
+
+#===============================================================================
+#
+#===============================================================================
+
+def main():
+    from . import __version__
+
+    logger.info(f"** Starting Cal-o-Matic {__version__}: the Calibration Wizard! **")
+
+    try:
+        logger.info(getGitInfo(__file__))
+    except Exception as err:
+        logger.error("Could not get git information! Exception: %s" % err)
+
+    app = CalApp(False)
+    app.MainLoop()
+
+
+#===============================================================================
+#
+#===============================================================================
+
+if __name__ == "__main__":
+    main()
+
+

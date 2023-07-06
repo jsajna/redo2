@@ -14,14 +14,19 @@ import shutil
 import string
 import time
 
+import ebmlite
+import endaq.device
 import git
 from win32com.client import Dispatch
+import wx
 
-import ebmlite
+try:
+    import paths
+except ModuleNotFoundError:
+    from . import paths
 
-import paths
-import util
 from shared_logger import logger
+
 from typing import Union
 
 #===============================================================================
@@ -527,6 +532,23 @@ def ejectDrive(drive):
 #
 #===============================================================================
 
+def getGitInfo(filename, root='..'):
+    """ Get the current commit information.
+
+        @param filename: The name of the Python file that called the function.
+        @param root: The repo root.
+        @return: A string for the log.
+    """
+    repo = git.Repo(root)
+
+    filename = filename or __file__
+    commit = next(repo.iter_commits())
+    return (u"%s: branch %s, commit %s (%s)" % (os.path.basename(filename),
+                                                repo.active_branch.name,
+                                                commit.hexsha[:7],
+                                                commit.authored_datetime))
+
+
 def getCommitDifference(root=None, branch=None, origin=None):
     """
     Get the number of git commits by which this repo is behind the (remote)
@@ -591,3 +613,114 @@ def cleanOldUpdates(device):
             return False
 
     return True
+
+
+#===============================================================================
+#
+#===============================================================================
+
+def retryLoop(desc, func, caption="Error", suggestion='This may be temporary. Retry?',
+              parent=None, ok="Retry", cancel="Abort", fatal=True):
+    """ Attempt to run a function, and give the user an option to retry
+        if it fails.
+
+        @param desc: Description of the action attempted (as fits the
+            sentence "an error occurred when...").
+        @param func: A 'partial' function to run, takes no arguments.
+        @param caption: Error dialog title.
+        @param suggestion: An additional suggestion for what to do before
+            retrying.
+        @param parent: The window parent, mainly for dialog placement.
+        @param ok: Text to use on the 'OK' button (instead of 'OK').
+        @param cancel: Text to use on the 'Cancel' button (instead of 'Cancel').
+        @param fatal: If `True`, cancel/abort will raise the exception.
+        @return: Whatever `func` returns.
+    """
+    tries = 0
+    while True:
+        try:
+            tries += 1
+            return func()
+        except Exception as err:
+            name = type(err).__name__
+            logger.error(f"Error when {desc} (try {tries}): {err!r}")
+            msg = f"An error occurrred when {desc}\n\n{name}: {err}\n\n{suggestion}"
+            with wx.MessageDialog(parent, msg, caption,
+                                  style=wx.OK | wx.CANCEL | wx.CENTER | wx.ICON_ERROR) as mb:
+                mb.SetOKCancelLabels(ok, cancel)
+                if mb.ShowModal() == wx.ID_CANCEL:
+                    logger.error(f"User chose {cancel!r} (cancel)")
+                    if fatal:
+                        raise
+                    else:
+                        return None
+
+
+#===============================================================================
+#
+#===============================================================================
+
+def getRecorder(serialNumber, timeout=120):
+    """ Wait for a recorder to reboot and appear as a USB disk. Intended for
+        use in/with a GUI.
+
+        @param serialNumber: The serial number of the expected device.
+        @param timeout: Time (seconds) to wait for device to appear.
+        @return: An `endaq.device.Recorder` instance or `None` if it
+            could not be found before timeout.
+    """
+    # Force cache of known drive letters to clear (recorder may already be
+    # present as a USB disk).
+    # endaq.device._LAST_RECORDERS = None
+
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        if endaq.device.deviceChanged():
+            for dev in endaq.device.getDevices():
+                if dev.serialInt == serialNumber:
+                    return dev
+        wx.Yield()
+        time.sleep(.25)
+
+
+#===============================================================================
+#
+#===============================================================================
+
+def setTime(dev, retries=3, maxDrift=2):
+    """ Attempt to set a device's clock, verifying each try.
+
+        :param dev: The `enadq.device.Recorder` to set.
+        :param retries: The number of retries before failure.
+        :param maxDrift: The maximum allowable difference in system vs.
+            device clocks. Note: this is relatively high due to a possible
+            bug in  `SerialCommandInterface` (seems to be adding 1 second).
+            A failure to set the clock will result in a much greater
+            difference.
+    """
+    # Check that device is available and still the same path (it could have
+    # rebooted or been power cycled).
+    if not os.path.exists(dev.path):
+        logger.debug(f'{str(dev).strip("<>")} not present; calling getRecorder()')
+        newdev = getRecorder(dev.serialInt)
+
+        if newdev is None:
+            raise endaq.device.DeviceTimeout(f'Could not find {dev.partNumber} {dev.serial} (timed out)')
+        else:
+            dev = newdev
+
+    t = 0
+    while t < retries:
+        drift = None
+        try:
+            dev.command.setTime(retries=3)
+            drift = abs(dev.command.getClockDrift())
+            if drift < maxDrift:
+                return True
+        except (IOError, endaq.device.DeviceError) as error:
+            t += 1
+            logger.error(f'Failed to set clock on {dev.serial} '
+                         f'(try {t} of {retries}), {drift=}, {error=!r}')
+
+    raise endaq.device.ConfigError(f'Could not set clock on {dev.serial} after {t} attempts')

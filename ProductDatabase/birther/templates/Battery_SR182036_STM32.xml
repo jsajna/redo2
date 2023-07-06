@@ -1,0 +1,10 @@
+<Fragment>
+	<Battery>
+		<!-- SR182036 battery, 4000mAh -->
+		<Capacity_mAh value="{battery.capacity}" />
+        <Vddscale_full_thresh value="2600"/>
+        <Vddscale_ok_thresh value="2466"/>
+        <Vddscale_low_thresh value="2333"/>
+        <Vddscale_dead_thresh value="2266"/>
+	</Battery>
+</Fragment>

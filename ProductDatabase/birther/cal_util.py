@@ -23,7 +23,8 @@ import util
 # 
 #===============================================================================
 
-from shared_logger import logger
+from .shared_logger import logger
+
 
 #===============================================================================
 # 
@@ -36,6 +37,25 @@ from shared_logger import logger
 # Save location of temporary directory, where things are staged before
 # getting copied to the shared folder.
 # paths.TEMP_DIR = os.path.realpath(os.path.expanduser('~/Documents/BirtherTemp'))
+
+# ===============================================================================
+#
+# ===============================================================================
+
+USERCAL_README = """\
+NOTE: This device arrived for calibration with a user calibration file
+(usercal.dat). This file has been renamed.
+
+Devices sent for recalibration with user calibration settings applied have 
+these settings disabled to allow for factory calibration. The user calibration 
+can be restored by going into the device's SYSTEM folder and renaming 
+"usercal.dat~" to "usercal.dat". This will remove the recent recalibration 
+applied by enDAQ, but it will restore the user calibration. The updated 
+calibration is always accessible under the Factory Calibration tab of the enDAQ
+Lab device configuration dialog.
+"""
+
+USERCAL_README_FILENAME = "usercal_README.txt"
 
 
 #===============================================================================
@@ -294,8 +314,14 @@ def cleanRecorder(dev):
     # Restore user's configuration (if this is a recalibration)
     if util.restoreBackup(dev.configFile, remove=True):
         logger.debug('Restored previous configuration')
-    if util.restoreBackup(dev.userCalFile, remove=True):
-        logger.debug('Restored previous user calibration')
+
+    # Add README explaining where the original usercal.dat has gone
+    if os.path.isfile(dev.userCalFile + '~'):
+        filename = os.path.join(os.path.dirname(dev.userCalFile),
+                                USERCAL_README_FILENAME)
+        with open(filename, 'w') as f:
+            logger.debug(f'Writing {filename}')
+            f.write(USERCAL_README)
 
     # TODO: Other cleaning?
     return True
@@ -336,30 +362,25 @@ def dumpCal(cal, saveTo=None):
 
     result = ['Serial Number: %s' % cal.dev.serial,
               'Date: %s' % time.asctime(),
-              '    File    X-rms    Y-rms    Z-rms    X-cal    Y-cal    Z-cal']
+              '    File    X-rms    Y-rms    Z-rms']
 
     filenames = util.XYZ(os.path.basename(f.filename) for f in cal.calFiles)
 
     result.extend(map(str, cal.calFiles))
-    if cal.hasHiAccel:
-        result.append(_channelName(cal.calFiles[0].accelChannel))
-        result.append("%s, X Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.x, cal.cal.x, cal.offsets.x))
-        result.append("%s, Y Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.y, cal.cal.y, cal.offsets.y))
-        result.append("%s, Z Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.z, cal.cal.z, cal.offsets.z))
-        result.append("%s, Transverse Sensitivity in XY = %5.2f percent" % (filenames.z, cal.trans[0]))
-        result.append("%s, Transverse Sensitivity in YZ = %5.2f percent" % (filenames.x, cal.trans[1]))
-        result.append("%s, Transverse Sensitivity in ZX = %5.2f percent" % (filenames.y, cal.trans[2]))
+    result.append('')
+
+    for accelId in cal.deviceInfo.accelIds:
+        result.append(_channelName(cal.calFiles[0].doc.channels[accelId]))
+        result.append("%s, X Axis Calibration Constant %9.6f, offset %9.6f" % (
+            filenames.x, cal.allGains[accelId].x, cal.allOffsets[accelId].x))
+        result.append("%s, Y Axis Calibration Constant %9.6f, offset %9.6f" % (
+            filenames.y, cal.allGains[accelId].y, cal.allOffsets[accelId].y))
+        result.append("%s, Z Axis Calibration Constant %9.6f, offset %9.6f" % (
+            filenames.z, cal.allGains[accelId].z, cal.allOffsets[accelId].z))
+        result.append("%s, Transverse Sensitivity in XY = %5.2f percent" % (filenames.z, cal.allTrans[accelId][0]))
+        result.append("%s, Transverse Sensitivity in YZ = %5.2f percent" % (filenames.x, cal.allTrans[accelId][1]))
+        result.append("%s, Transverse Sensitivity in ZX = %5.2f percent" % (filenames.y, cal.allTrans[accelId][2]))
         result.append('')
-
-    if cal.hasLoAccel:
-        result.append(_channelName(cal.calFiles[0].accelChannelLo))
-        result.append("%s, X Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.x, cal.calLo.x, cal.offsetsLo.x))
-        result.append("%s, Y Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.y, cal.calLo.y, cal.offsetsLo.y))
-        result.append("%s, Z Axis Calibration Constant %9.6f, offset %9.6f" % (filenames.z, cal.calLo.z, cal.offsetsLo.z))
-        result.append("%s, Transverse Sensitivity in XY = %5.2f percent" % (filenames.z, cal.transLo[0]))
-        result.append("%s, Transverse Sensitivity in YZ = %5.2f percent" % (filenames.x, cal.transLo[1]))
-        result.append("%s, Transverse Sensitivity in ZX = %5.2f percent" % (filenames.y, cal.transLo[2]))
-
     result = '\n'.join(result)
 
     if isinstance(saveTo, str):

@@ -8,7 +8,7 @@ import getpass
 import logging
 import socket
 
-import paths
+# from . import paths
 
 LOG_FORMAT = "%(asctime)s %(module)s %(levelname)s: %(message)s"
 LOG_FILENAME = f"{datetime.now().date()}_{socket.gethostname()}_{getpass.getuser()}.txt"

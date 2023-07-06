@@ -18,22 +18,5 @@ if __name__ == "__main__":
     elif args.nodebug:
         os.environ['MIDE_DEV'] = '0'
 
-    from birther.birth_wizard import BirtherApp, logger
-
-    logger.info("** Starting Birth-o-Matic: the Birth Wizard! **")
-
-    try:
-        from git.repo import Repo
-
-        repo = Repo('..')
-        commit = next(repo.iter_commits())
-        logger.info(u"%s: branch %s, commit %s" % (os.path.basename(__file__),
-                                                   repo.active_branch.name,
-                                                   commit.hexsha[:7]))
-        logger.info(u"Commit date: %s" % commit.authored_datetime)
-    except Exception as err:
-        logger.error("Could not get git information! Exception: %s" % err)
-
-    app = BirtherApp(False)
-    app.MainLoop()
-
+    import birther.birth_wizard
+    birther.birth_wizard.main()

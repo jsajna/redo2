@@ -15,8 +15,8 @@ import idelib
 
 BIRTHER_PATH = os.path.dirname(__file__)
 REAL_PRODUCT_ROOT_PATH = r"\\MIDE2007\Products\LOG-Data_Loggers\LOG-0002_Slam_Stick_X"
-FAKE_PRODUCT_ROOT_PATH = r"~\workspace\BirtherData\LOG-Data_Loggers\LOG-0002_Slam_Stick_X"
-PRODUCT_ROOT_PATH = REAL_PRODUCT_ROOT_PATH
+FAKE_PRODUCT_ROOT_PATH = "C:\\Users\\jsajna\\Documents\\BirtherData\\LOG-Data_Loggers\\LOG-0002_Slam_Stick_X"
+PRODUCT_ROOT_PATH = FAKE_PRODUCT_ROOT_PATH
 
 if os.environ.get('MIDE_DEV', '0') == '1':
     PRODUCT_ROOT_PATH = os.environ.get('MIDE_DEV_BIRTHDATA',

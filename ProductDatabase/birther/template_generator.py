@@ -37,8 +37,8 @@ import endaq.device  # @UnusedImport - sets up schema paths when imported
 import ebmlite.util
 import pytz
 
-import paths
-from util import makeBackup
+from . import paths
+from .util import makeBackup
 
 # Django setup
 # os.environ['DJANGO_SETTINGS_MODULE'] = "ProductDatabase.settings"
@@ -55,7 +55,7 @@ models = apps.get_app_config('products').models_module
 #--- Logger setup
 #===============================================================================
 
-from shared_logger import logger
+from .shared_logger import logger
 
 #===============================================================================
 #--- Globals and 'constants' (paths, default filenames, etc.) 
@@ -170,7 +170,7 @@ class ManifestTemplater(object):
         if os.path.isfile(filename):
             return filename
 
-        raise IOError(errno.ENOENT, 'No such template', filename)
+        raise IOError(errno.ENOENT, f'No such template: {filename}')
         
     
     def readTemplate(self, name, path="", prefix="", suffix="",
@@ -212,23 +212,46 @@ class ManifestTemplater(object):
     # 
     #===========================================================================
     
-    def __init__(self, birth, templatePath=paths.TEMPLATE_PATH, template=None):
+    def __init__(self, birth, templatePath=paths.TEMPLATE_PATH, template=None,
+                 **kwargs):
         """ Constructor.
         
             @param birth: The `products.models.Birth` object of the recorder
                 for which to generate the templates.
             @param templatePath: The root directory of the template fragment
                 XML files.
+
+            Optional parameters, which override various `Birth` and `Device`
+            attributes:
+
+            @keyword serialNumber: Alternate serial number (uint)
+            @keyword productName: Alternative product name (str)
+            @keyword partNumber: Alternative part number (str)
+            @keyword hwRev: The hardware version (uint)
+            @keyword minFwRev: The minimum firmware version for this device (uint)
         """
+        self.templateArgs = {'birth': birth,
+                             'device': birth.device,
+                             'serialNumber': birth.serialNumber,
+                             'productName': birth.productName,
+                             'partNumber': birth.partNumber,
+                             'hwRev': birth.device.hwRev,
+                             'minFwRev': birth.device.minFwRev,
+                             'user': USER,
+                             'machine': MACHINE}
+
+        badArgs = set(kwargs).difference(self.templateArgs)
+        if badArgs:
+            raise TypeError(f'Unknown additional keyword(s): {tuple(badArgs)}')
+
         self.templatePath = templatePath
         self.templateFile = template
         self.birth = birth
         self.device = birth.device
         self.formatter = EvalFormatter()
         
-        self.templateArgs = {'birth': birth, 'device': self.device,
-                             'user': USER, 'machine': MACHINE}
-        
+        self.templateArgs.update(kwargs)
+
         if template is None:
             self.templateFile = birth.getTemplateName()
         

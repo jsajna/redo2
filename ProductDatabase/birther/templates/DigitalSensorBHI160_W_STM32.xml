@@ -1,0 +1,7 @@
+<Fragment>
+    <!-- IMU (for W w/ STM32) -->
+    <DigitalSensorBHI160>
+      <!-- Bits 7-0 set BHI orientation, 15-8 set BMM orientation, 19-16 set I2C bus -->
+      <SensorConfig value="0x10101"/>
+    </DigitalSensorBHI160>
+</Fragment>

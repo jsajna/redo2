@@ -18,22 +18,5 @@ if __name__ == "__main__":
     elif args.nodebug:
         os.environ['MIDE_DEV'] = '0'
 
-    from birther.cal_wizard import CalApp, logger
-
-    logger.info("** Starting Cal-o-Matic: the Calibration Wizard! **")
-
-    try:
-        from git.repo import Repo
-
-        repo = Repo('..')
-        commit = next(repo.iter_commits())
-        logger.info("%s: branch %s, commit %s" % (os.path.basename(__file__),
-                                                   repo.active_branch.name,
-                                                   commit.hexsha[:7]))
-        logger.info("Commit date: %s" % commit.authored_datetime)
-    except Exception as err:
-        logger.error("Could not get git information! Exception: %s" % err)
-
-    app = CalApp(False)
-    app.MainLoop()
-
+    import birther.cal_wizard
+    birther.cal_wizard.main()

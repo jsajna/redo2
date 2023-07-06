@@ -21,9 +21,10 @@ os.environ['DJANGO_SETTINGS_MODULE'] = "ProductDatabase.settings"
 
 import django.db
 django.setup()
-import paths  # Not used directly, but sets things up.
-import template_generator
-from template_generator import models  # `products.models`
+
+from . import paths  # Not used directly, but sets things up.
+from . import template_generator
+from .template_generator import models  # `products.models`
 
 from endaq.device import getRecorder
 
@@ -98,7 +99,7 @@ def makeUserpage(manifest, caldata, recprops=b'\x00', pageSize=2048):
     return data
 
 
-def generateUserpage(birth, filename=None, zipit=False, cal=None):
+def generateUserpage(birth, filename=None, zipit=False, cal=None, **kwargs):
     """ Generate a USERPAGE file for a device specified by serial number.
 
         @param birth: The `models.Birth` of the device for which to generate the data.
@@ -108,7 +109,7 @@ def generateUserpage(birth, filename=None, zipit=False, cal=None):
             for the device.
     """
     print("Generating USERPAGE for %s," % birth, end=" ")
-    mt = template_generator.ManifestTemplater(birth)
+    mt = template_generator.ManifestTemplater(birth, **kwargs)
 
     cal = cal or birth.device.getLastCal()
     if cal:
@@ -123,8 +124,9 @@ def generateUserpage(birth, filename=None, zipit=False, cal=None):
     userpage = makeUserpage(mandata, caldata)
 
     if not filename:
+        serialNumberString = str(kwargs.get('serialNumber', birth.serialNumberString))
         ext = "zip" if zipit else "bin"
-        filename = "userpage_%s.%s" % (birth.serialNumberString, ext)
+        filename = "userpage_%s.%s" % (serialNumberString, ext)
 
     print("-> Writing %s (data is %s bytes total; %s manifest, %s calibration)" %
           (filename, len(userpage), len(mandata), len(caldata)))

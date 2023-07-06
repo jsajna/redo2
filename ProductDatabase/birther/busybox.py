@@ -18,7 +18,7 @@ import wx
 from wx.adv import Animation, AnimationCtrl
 
 # Note: This bit isn't reusable elsewhere.
-import paths
+from . import paths
 RESOURCES_PATH = paths.RESOURCES_PATH
 
 

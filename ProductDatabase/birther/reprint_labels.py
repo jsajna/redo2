@@ -23,6 +23,10 @@ models = apps.get_app_config('products').models_module
 from . import labels
 
 
+#===============================================================================
+#
+#===============================================================================
+
 class ReprintDialog(sc.SizedDialog):
     """
     Main UI for the label re-printer.
@@ -52,6 +56,7 @@ class ReprintDialog(sc.SizedDialog):
 
         self.nameLabelCheck = wx.CheckBox(pane, -1, "Print name/SN label")
         self.nameLabelCheck.SetSizerProps(expand=True)
+        self.nameLabelCheck.SetValue(True)
         self.skuField = wx.TextCtrl(pane, -1, str(self.dev.partNumber))
         self.skuField.SetSizerProps(expand=True, proportion=2)
 
@@ -60,7 +65,13 @@ class ReprintDialog(sc.SizedDialog):
         self.calList = wx.Choice(pane, -1, choices=calNames)
         self.calList.SetSizerProps(expand=True, proportion=2)
 
-        self.nameLabelCheck.SetValue(True)
+        wx.Panel(pane, -1, size=(8,8))  # Padding hack
+        wx.Panel(pane, -1, size=(8,8))
+        self.chainPrintCheck = wx.CheckBox(pane, -1, "Chain Print")
+        self.chainPrintCheck.SetSizerProps(expand=True)
+        self.chainPrintCheck.SetValue(True)
+        self.chainPrintCheck.SetToolTip("Don't automatically cut the last label. "
+                                        "Saves tape when calibrating multiple devices.")
 
         if not self.cals:
             self.calLabelCheck.SetValue(False)
@@ -103,46 +114,9 @@ class ReprintDialog(sc.SizedDialog):
         """ Handle the Print (OK) button press."""
         evt.Skip()
 
-
-    @classmethod
-    def printLabels(cls, dev=None, name=None, session=None, printer=None):
-        """ Print one or both labels.
-
-            :param dev: The device in need of labels.
-            :param name: The name (SKU) printed on the serial number label.
-                `None` to skip this label.
-            :param session: The CalSession to print. `None` to skip this
-                label.
-            :param printer: The label printer to use. Defaults to first
-                found. Almost always `None`.
-        """
-        try:
-            while not labels.canPrint(printer):
-                # Note: PLite LED is specific to PT-P700
-                q = wx.MessageBox("The label printer could not be found.\n\n"
-                                  "Make sure it is attached, turned on, "
-                                  'and the "PLite" LED is off.\n\n'
-                                  "Try again?", "Label Printing Error",
-                                  wx.YES_NO | wx.ICON_ERROR)
-                if q == wx.NO:
-                    return False
-
-            if name:
-                sku = dev.partNumber
-                sn = dev.serial
-                labels.printBirthLabel(sku, sn, printer=printer)
-
-            if session:
-                labels.printCalLabel(session.sessionId, session.date, printer=printer)
-
-            return True
-
-        except RuntimeError:
-            wx.MessageBox("The printer SDK components could not be loaded.\n\n"
-                          "Have they been installed?", "Label Printing Error",
-                          wx.OK | wx.ICON_ERROR)
-            return False
-
+#===============================================================================
+#
+#===============================================================================
 
 def main():
     devs = getDevices()
@@ -169,8 +143,14 @@ def main():
                     kwargs['session'] = cals[idx]
 
             if kwargs:
-                dlg.printLabels(dev=dev, **kwargs)
+                labels.printLabels(dev,
+                                   chain=dlg.chainPrintCheck.GetValue(),
+                                   parent=dlg,
+                                   **kwargs)
 
+#===============================================================================
+#
+#===============================================================================
 
 if __name__ == "__main__":
     app = wx.App()

@@ -1,14 +1,11 @@
 """
 GUI for selecting a connected device and regenerating its USERPAGE.
 """
-from __future__ import print_function
 import argparse
 import logging
 
-import wx
-
-import generate_userpage  # Python paths will be set up after importing generate_userpage
-from widgets.device_dialog import selectDevice
+from endaq.device import getDevices
+from . import generate_userpage  # Python paths will be set up after importing generate_userpage
 
 # Set `True` to prevent update command and show more debugging messages
 __DEBUG__ = False
@@ -29,24 +26,42 @@ if __name__ == "__main__":
     else:
         generate_userpage.template_generator.logger.setLevel(logging.ERROR)
 
-    app = wx.App()
+    good = bad = 0
 
-    while True:
-        dev = selectDevice(hideClock=True, hideRecord=True, showWarnings=False, showAdvanced=True,
-                           title="USERPAGE (Manifest/Calibration) Updater",
-                           okText="Reapply Selected Device's USERPAGE", cancelText="Cancel")
-        if not dev:
-            break
+    try:
+        print("\n\n**** Device USERPAGE updater ****")
+        input("Connect one or more enDAQ recorders and hit return. ")
+        while True:
+            print("Gathering devices...")
+            devices = getDevices()
+            if not devices:
+                q = input("No devices found. Try again [Y/n]?" )
+                if q.upper() in ('', 'Y'):
+                    continue
+                else:
+                    break
 
-        print("Selected: %s" % dev)
+            print(f'Found {len(devices)} device(s): {", ".join(d.serial for d in devices)}')
 
-        try:
-            generate_userpage.updateDevice(dev.path, apply=not args.noapply)
-            msg = "Update of %s completed\n\nReapply another device's USERPAGE?" % dev.serial
-        except Exception as err:
-            msg = "Failed to update %s\n\n%r\n\nTry updating another device's USERPAGE?" % (dev.serial, err)
+            for dev in devices:
+                print(f"Updating {dev}")
 
-        if wx.MessageBox(msg, "Update Complete", wx.YES_NO | wx.YES_DEFAULT) == wx.NO:
-            break
+                try:
+                    generate_userpage.updateDevice(dev.path, apply=not args.noapply)
+                    print(f"Updated {dev}")
+                    good += 1
+                except Exception as err:
+                    print(f"Failed to update {dev}: {err!r}")
+                    bad += 1
+            q = input("Update more devices [Y/n]?")
+            if q.upper() in ('', 'Y'):
+                continue
+            else:
+                break
+
+    except KeyboardInterrupt:
+        print('\n!!! Received keyboard interrupt/ctrl+c, quitting...')
+
+    print(f'Finished after successfully updating {good} device(s), {bad} failure(s)')
 
     exit(0)

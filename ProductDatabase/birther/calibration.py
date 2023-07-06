@@ -6,12 +6,7 @@ Database-backed calibration script!
     digital accelerometer always used to be lower g than the analog one, but
     in almost half of the new devices, that's not the case.
 
-@todo: Clean this up! It has a lot of code debt, specifically how the 'high'
-    and 'low' accelerometers are handled separately. It should really just
-    handle any number of accelerometers the same way, using the same code.
-@todo: Get rid of how the 'low' accelerometer becomes the 'high' one if it is
-    the only accelerometer. It was a hack put in when the 'low' accelerometer
-    was originally added. The previous TODO probably makes this moot.
+Terminal-use: run in ProductDatabase via python -m birther.calibration
 """
 
 from datetime import datetime
@@ -21,20 +16,21 @@ from numbers import Number
 import os.path
 import sys
 import time
-
 import numpy as np
-import pylab 
 from scipy.signal import butter, sosfilt
+from typing import Union, List, Optional, Tuple
 
 from . import paths  # Just importing should set things
+from . import __version__
 from .shared_logger import logger
 from idelib.importer import importFile
+from .shakeprofile import ShakeProfile, exp_order, order_10g
 
-import endaq.device
+from endaq.device import fromRecording, getDevices
+from endaq.ide import get_doc, get_channels
 
 from . import util
 from .util import XYZ
-
 #===============================================================================
 #--- Django setup
 #===============================================================================
@@ -51,11 +47,11 @@ django.setup()
 # from ProductDatabase.products import models
 from django.apps import apps
 models = apps.get_app_config('products').models_module
+from math import ceil
 
-
-#===============================================================================
-# 
-#===============================================================================
+# ===============================================================================
+#
+# ===============================================================================
 
 # The current user (for logging in database)
 USER = getpass.getuser()
@@ -64,11 +60,12 @@ USER = getpass.getuser()
 # last calibration had no humidity recorded.
 DEFAULT_HUMIDITY = 22.3
 
+
 # schema_mide = loadSchema('mide_ide.xml')
 
-#===============================================================================
-# 
-#===============================================================================
+# ===============================================================================
+#
+# ===============================================================================
 
 
 def reconnect():
@@ -78,18 +75,33 @@ def reconnect():
     try:
         # Arbitrary simple query to 'ping' the database connection
         models.Product.objects.count()
-        
+
     except (InterfaceError, OperationalError):
         django.db.connection.close()
-        
+
         # Try again, just in case there was some other InterfaceError that
         # closing the connection didn't fix.
         models.Product.objects.count()
 
 
+def get_center_indexes(start: int, end: int, range: int):
+    """ Find the indices that span <range> number of values in the middle of <start> and <end> """
+    total = end - start
+    if end <= start:
+        raise(ValueError(f"End index {end} not after start index {start}"))
+
+    if range > total:  # if the size of the selection needed is larger than the broad area given
+        print("Using approx. middle third")
+        return get_center_indexes(start, end, round(total / 3))
+    else:
+        start = ceil((total / 2) - (range / 2)) + start
+        return start, start + range - 1
+
+
 #===============================================================================
 #
 #===============================================================================
+
 
 class CalibrationError(ValueError):
     """ Exception raised when some part of calibration fails.
@@ -123,338 +135,354 @@ def _println(*args):
     _print(*args, newline=True)
 
 
-#===============================================================================
-# 
-#===============================================================================
+class DeviceInfo(object):
+    """ Represents the library of information for a specific device
+    & some broad information for all devices """
 
-class AccelCalFile(object):
-    """ One analyzed IDE file containing data recorded on the shaker. Only one
-        axis per file is relevant (shaker moves in one direction).
-    """
+    CAL_IDS = {
+        # Analog primary
+        (8, 0): 1,
+        (8, 1): 2,
+        (8, 2): 3,
+        # S1/S2 Digital primary
+        (80, 0): 81,
+        (80, 1): 82,
+        (80, 2): 83,
+        # SSX/SSS Digital secondary
+        (32, 0): 33,
+        (32, 1): 34,
+        (32, 2): 35,
+    }
+
     # XXX: THIS IS ALL GETTING REWRITTEN USING NEW STUFF IN  `endaq.device`!
     # Known channel/subchannel IDs of pressure sensors, in preferred order
     # of use (going left to right, if the file has the channel, use it).
     KNOWN_PRESSURE_CHANNELS = ((36, 0), (59, 0))
-    
+
     # Known channel/subchannel IDs of temperature sensors, in preferred order
     # of use (going left to right, if the file has the channel, use it).
     KNOWN_TEMP_CHANNELS = ((36, 1), (59, 1))
 
     # Known channel/subchannel IDs of humidity sensors, in preferred order
     # of use (going left to right, if the file has the channel, use it).
-    KNOWN_HUMIDITY_CHANNELS = ((59, 2), )
-    
+    KNOWN_HUMIDITY_CHANNELS = ((59, 2),)
+
     # The channel IDs used by any accelerometer we might calibrate.
     KNOWN_HI_ACCEL_CHANNELS = (0, 8, 80)
     KNOWN_LO_ACCEL_CHANNELS = (32, 80)
-    
-    # Mapping of _analyze() kwargs for each accelerometer channel ID, so 
+
+    # Mapping of _analyze() kwargs for each accelerometer channel ID, so
     # everything can be automated (instead of explicitly doing lo/hi-G).
     # FOR FUTURE USE. Currently, hardcoded arguments used.
     # XXX: Is this really necessary? Can it be calculated from sample rate?
-    ANALYSIS_SETTINGS = {8:  dict(),
+    ANALYSIS_SETTINGS = {8: dict(),
                          32: dict(thres=6, start=1000, length=1000)}
-    
-    # RMS value of closed loop calibration
-    REFERENCE_RMS_10g = 7.075       # 10*(2**.5)/2
-    REFERENCE_RMS_4g = 4*(2**.5)/2  # 4*(2**.5)/2
-    REFERENCE_OFFSET = 1.0
 
+    def __init__(self, calibrator, dev, pn: str=None, mcu: str=None, skipTime: float=0.5, acOnly: bool=False, dcOnly: bool=False):
+        from devicedata import get_device
 
-    def __init__(self, filename, dev=None, acOnly=False, dcOnly=False,
-                 skipSamples=None, validate=True):
-        """ Constructor.
-        
-            @param filename: The IDE file to read.
-            @param dev: The recorder. If `None`, the device will be
-                instantiated from the recording.
-            @param acOnly: If `True`, only calibrate the AC (primary)
-                accelerometer.
-            @param dcOnly:  If `True`, only calibrate the low/digital
-                (secondary) accelerometer.
-            @param skipSamples: The number of samples to skip before the data
-                used in the calibration. Used to work around sensor settling
-                time.
-            @param validate: If `True`, make sure the IDE is usable.
-        """
-        self.doc = None
+        self.calibrator = calibrator
         self.dev = dev
-        
-        self.filename = filename
-        self.basename = os.path.basename(filename)
-        self.name = os.path.splitext(self.basename)[0]
-        self.skipSamples = skipSamples
+
+        if not pn and (devpn := dev.partNumber):  # if not asked to calibrate as another part number
+            pn = str(devpn).upper()
+        if not mcu and (devmcu := dev.mcuType):  # if not asked to calibrate as another mcu
+            mcu = str(devmcu).upper()
+        self.partNumber = pn
+        self.mcu = mcu
+        devdata = get_device(self.partNumber, self.mcu)
+        print(f"Calibrating as PN: {devdata.name}, MCU: {devdata.mcu}")
+
+        self.gravities = XYZ(None)
+        self.axesFlips = devdata.flips
+        self.ranges = devdata.ranges
+        self.skipTime = skipTime
+        self.accelIds = []
+        self.hiAccelId = None
+        self.loAccelId = None
         self.acOnly = acOnly
         self.dcOnly = dcOnly
 
-        # The relevant axis' subchannel IDs on each accelerometer (0-2).
-        # Computed later.
-        self.subchannel = None
-        self.subchannelLo = None
-
-        _print(f"importing {os.path.basename(self.filename)}... ")
-        self.doc = importFile(self.filename)
-        self.timestamp = self.doc.lastUtcTime
-        
-        if self.dev is None:
-            self.dev = endaq.device.fromRecording(self.doc)
-            
-        self.serialNum = self.dev.serial
-
-        self.hasHiAccel = False
-        self.hasLoAccel = False
-
-        # The starting *times* of the two shakes in the recording. Use
-        # `EventList.getEventIndexNear()` to get actual indices for the
-        # specific `EventList` at its sample rate.
-        self.start10g = self.start4g = None
-
-        # Channel sample rates, keyed by channel ID.
-        self.sampleRates = {}
-
-        # All the other instance variables used (for convenient reference)
-        self.accel = None
-        self.accelChannel = self.accelChannelLo = None
-        self.accelLo = self.axisIds = None
-        self.cal = self.calLo = None
-        self.cal_humid = None
-        self.cal_press = None
-        self.cal_temp = None
-        self.means = self.meansLo = None
-        self.rms = self.rmsLo = None
-        self.times = self.timesLo = None
-
-        if validate:
-            self.validate()
-        
-        self.analyze()
-
-
-    def __str__(self):
-#         raise NotImplementedError("Refactor AccelCalFile.__str__()!")
-    
-        try:
-            cols = " ".join(f"{v:10.4f}" for v in (self.rms + self.cal))
-            return f'{self.name} {cols}'
-        except (TypeError, AttributeError):
-            return super(self, AccelCalFile).__str__()
-
-
-    def __repr__(self):
-        try:
-            return "<%s %s at 0x%08x>" % (self.__class__.__name__,
-                                          os.path.basename(self.filename),
-                                          id(self))
-        except (AttributeError, TypeError):
-            return super(AccelCalFile, self).__repr__()
-
-    
-    #===========================================================================
-    # 
-    #===========================================================================
-
-    @staticmethod
-    def lowpassFilter(data, cutoff, fs, order=5):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        sos = butter(order, normal_cutoff, btype='low', analog=False, output='sos')
-        y = sosfilt(sos, data)
-        return y
-    
-    
-    @staticmethod
-    def highpassFilter(data, cutoff, fs, order=5):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        sos = butter(order, normal_cutoff, btype='high', analog=False, output='sos')
-        y = sosfilt(sos, data)
-        return y
-
-    
-    #===========================================================================
-    # 
-    #===========================================================================
-    
-    @classmethod
-    def _getFirstIndex(cls, a, thres, col):
-        """ Return the index of the first item in the given column that passes
-            the given test.
-            Note that since this uses an iter it does not react well to using reversed data for some reason
-
-            @param a: A 2D numpy array.
-            @param thres: The threshold value
-            @param col: The column of the data to check.
-            @return: The index of the first item to pass the test.
+    def setAccelIds(self, calFiles: list):
+        """ collect all the acceleration channel IDs
+        @param calFiles: list of AccelCalFiles
         """
-        it = np.nditer(a[:, col], flags=['f_index'])
-        while not it.finished:
-            if abs(it[0]) > thres:
-                return it.index
-            it.iternext()
-        return 0
+        common_keys_list = [key for key in calFiles[0].accels if key in calFiles[1].accels and key in calFiles[2].accels]
+        self.accelIds = common_keys_list
 
-
-    @classmethod
-    def _getFirstIndexNoIter(cls, a, thres, col):
-        """ Return the index of the first item in the given column that passes
-            the given test.
-            Note that this uses a simple for loop so it can go through a reversed array
-
-            @param a: A 2D numpy array.
-            @param thres: The threshold value
-            @param col: The column of the data to check.
-            @return: The index of the first item to pass the test.
+    def setFlips(self, calFiles: list):
+        """ apply the axis flips to their respective gains
+        @param calFiles: list
         """
-        for index, number in enumerate(a[:, col]):
-            if abs(number) > thres:
-                return index
-        return 0
+        for calFile in calFiles:
+            for accel, flip in self.axesFlips.items():
+                calFile.accels[accel].gain *= flip[calFile.shaken]
 
-
-    @classmethod
-    def getFirstIndices(cls, data, thres, axisIds):
-        """ Find the index of the first valid data.
+    def setHiLoAccels(self, doc, hiExclude: Optional[List[int]]=None,
+                      loExclude: Optional[List[int]]=None) -> Tuple[int, int]:
+        """ determine the channel ID that will serve as the high and low accels
+        @param doc: Dataset for a file
+        @param hiExclude: list of ids not to consider of high accels
+        @param loExclude: list of ids not to consider of low accels
+        @return: tuple of high and low id
         """
-        # Column 0 is the time, so axis columns are offset by 1
-        indices = XYZ(cls._getFirstIndex(data, thres, axisIds.x+1),
-                      cls._getFirstIndex(data, thres, axisIds.y+1),
-                      cls._getFirstIndex(data, thres, axisIds.z+1))
+        # the algorithm behind finding the high and low remains the same
+        self.hiAccelId = self.getHighAccelerometer(doc, hiExclude)
+        self.loAccelId = self.getLowAccelerometer(doc, loExclude)
+        return self.hiAccelId, self.loAccelId
 
-        # Indices used to be calculated for each axis, but this seems to have
-        # been a cargo cult artifact from the original MATLAB and/or ancient
-        # data. New data all starts at the same time.
-        indices.x = indices.y = indices.z = max(indices)
-
-        return indices
-
-
-    @classmethod
-    def getFirstIndex(cls, data, thres, axisIds):
-        """ Find the index of the first valid data.
-        """
-        # Column 0 is the time, so axis columns are offset by 1
-        indices = XYZ(cls._getFirstIndex(data, thres, axisIds.x + 1),
-                      cls._getFirstIndex(data, thres, axisIds.y + 1),
-                      cls._getFirstIndex(data, thres, axisIds.z + 1))
-
-        # Indices used to be calculated for each axis, but this seems to have
-        # been a cargo cult artifact from the original MATLAB and/or ancient
-        # data. New data all starts at the same time.
-        return max(indices)
-
-
-    @classmethod
-    def getLastIndex(cls, data, thres, axisIds):
-        """ Find the index of the last point above thres
-        """
-        print(f"getLastIndex {data.shape=}")
-        # Column 0 is the time, so axis columns are offset by 1
-        reverseData = np.flipud(data)
-        length = data.shape[0]
-        indices = XYZ(cls._getFirstIndexNoIter(reverseData, thres, axisIds.x + 1),
-                      cls._getFirstIndexNoIter(reverseData, thres, axisIds.y + 1),
-                      cls._getFirstIndexNoIter(reverseData, thres, axisIds.z + 1))
-
-        # Indices used to be calculated for each axis, but this seems to have
-        # been a cargo cult artifact from the original MATLAB and/or ancient
-        # data. New data all starts at the same time.
-        return length-max(indices)
-
-
-    @classmethod
-    def calculateRMS(cls, data, axis=None):
-        """ Compute the root mean square of data in a numpy array.
-        """
-        return np.sqrt(np.mean(data**2, axis=axis))
-
-
-    def getAccelerometers(self, knownIds=None):
-        """ Get all known accelerometer channels, using a list of known
-            channel IDs.
-        """
-        knownIds = knownIds or (self.KNOWN_HI_ACCEL_CHANNELS +
-                                self.KNOWN_LO_ACCEL_CHANNELS)
-        return [ch for ch in self.doc.channels.values() if ch.id in knownIds]
-
-
-    def getChannelMean(self, knownIds=KNOWN_TEMP_CHANNELS):
-        """ Get the mean of a subchannel, using the first existing IDs from
-            the list of `knownIds` that can be found. For getting the average
-            temperature/humidity.
-        """
-        for chId, subChId in knownIds:
-            if chId in self.doc.channels:
-                if subChId < len(self.doc.channels[chId]):
-                    channel = self.doc.channels[chId][subChId]
-                    return channel.getSession()[:].mean(axis=1)[1]
-        
-        return None
-        
-
-    def _getAccel(self, channelIds, exclude=None):
-        """ Get the first accelerometer that appears in the given list of IDs.
-        
-            @param channelIds: A list of accelerometer channel IDs.
-            @keyword exclude: A list of channel IDs to ignore.
-        """
-        # TODO: Actually check sensor descriptions to get channel ID
-        exclude = exclude or []
-        for chid in set(channelIds).difference(exclude):
-            if chid in self.doc.channels:
-                return self.doc.channels[chid]
-
-
-    def getHighAccelerometer(self, exclude=None):
+    def getHighAccelerometer(self, doc, exclude: Optional[List[int]]=None) -> Union[int, None]:
         """ Get the high-G accelerometer channel.
-        
-            @keyword exclude: A list of channel IDs to ignore.
+            @param doc: Dataset of a file
+            @param exclude: A list of channel IDs to ignore.
+            @return: int channel ID or None
         """
         exclude = exclude or []
 
-        if self.dcOnly or self.dev.partNumber.startswith('LOG-0003'):
+        if self.dcOnly or self.partNumber.startswith('LOG-0003'):
             return None
-        
+
         pn = str(self.dev.partNumber).upper()
         if fnmatch(pn, "[SW]?-D*") and not fnmatch(pn, "S?-D*D*"):
             return None
 
-        ch = self._getAccel(self.KNOWN_HI_ACCEL_CHANNELS, exclude)
+        ch = self._getAccel(self.KNOWN_HI_ACCEL_CHANNELS, doc, exclude)
         if ch is not None:
-            return ch
+            return ch.id
 
         raise CalibrationError("Primary accelerometer channel not where expected!",
-                               self.doc)
+                               doc)
 
-
-    def getLowAccelerometer(self, exclude=None):
+    def getLowAccelerometer(self, doc, exclude: Optional[List[int]]=None) -> Union[int, None]:
         """ Get the high-G accelerometer channel.
-        
-            @keyword exclude: A list of channel IDs to ignore.
+            @param doc: Dataset of a file
+            @param exclude: A list of channel IDs to ignore.
         """
         exclude = exclude or []
 
         # Handle old SSCs. The following len(self.doc.channels) == 2: check skips old SSC units
         # Wish I understood the logic better here ~PJS
         if self.dev.partNumber.startswith('LOG-0003'):
-            ch = self._getAccel(self.KNOWN_LO_ACCEL_CHANNELS, exclude)
+            ch = self._getAccel(self.KNOWN_LO_ACCEL_CHANNELS, doc, exclude)
             if ch is not None:
-                return ch
+                self.loAccelId = ch.id
+                return ch.id
 
-        if self.acOnly or len(self.doc.channels) == 2:
+        if self.acOnly or len(doc.channels) == 2:
             return None
-        
-        ch = self._getAccel(self.KNOWN_LO_ACCEL_CHANNELS, exclude)
+
+        ch = self._getAccel(self.KNOWN_LO_ACCEL_CHANNELS, doc, exclude)
         if ch is not None:
-            return ch
+            return ch.id
 
         raise CalibrationError("Secondary accelerometer channel not where expected!",
-                               self.doc)
+                               doc)
+
+    def _getAccel(self, channelIds: List[int], doc, exclude: Optional[List[int]]=None):
+        """ Get the first accelerometer that appears in the given list of IDs.
+            @param channelIds: A list of accelerometer channel IDs.
+            @param doc: Dataset of IDE file
+            @param exclude: A list of channel IDs to ignore.
+            @return: a channel
+        """
+        # TODO: Actually check sensor descriptions to get channel ID
+        exclude = exclude or []
+        for chid in set(channelIds).difference(exclude):
+            if chid in doc.channels:
+                return doc.channels[chid]
+
+    def getGravities(self, calFiles):
+        """ Get the gravity directions of the data provided.
+
+            @param dev: Device being looked at, so we know the accelerometers and inversions
+            @param calFiles: list of AccelCalFiles
+            @return: XYZ of the direction of gravity in each file
+        """
+        # On Mini, use the 40 or 8 g accelerometer. Otherwise use the secondary (which is always 40g)
+        if self.partNumber.startswith(('S1', 'S2')):
+            activeFlips = self.axesFlips[self.hiAccelId]
+            activeMeans = [calFiles[i].accels[self.hiAccelId].means for i in range(3)]
+        else:
+            if not self.loAccelId:
+                print("No DC accelerometer found!")
+                self.gravities = XYZ([1, 1, 1])
+                return
+            activeFlips = self.axesFlips[self.loAccelId]
+            activeMeans = [calFiles[i].accels[self.loAccelId].means for i in range(3)]
+        measurement = [activeFlips[i] * activeMeans[i] for i in range(3)]
+        gravity = [m / abs(m) for m in measurement]
+        if gravity[2] != 1:
+            raise CalibrationError("Got the wrong gravity vector on Z for some dumb reason")
+
+        self.gravities = XYZ(gravity)
 
 
-    def getAxisIds(self, channel):
+class AccelerometerData(object):
+    """ Represents the calibration data for a single axis of a channel of a single IDE file """
+    def __init__(self, doc, accel, shaken: int, range: int, skipTime: float=0.5):
+        self.doc = doc
+        self.accel = accel
+        self.accelRange = range
+        self.axisIds= self.getAxisIds(accel)
+        self.subchannel = None
+        self.shake = None  # figure
+        self.shaken = shaken
+        self.gain = None
+        self.means = None
+        self.offset = None
+        self.referenceRMS = None
+        self.rms = None
+        self.trans = None
+        self.sampRate = None
+        self.skipTime = skipTime
+        self.skipSamples = None
+        self.shakeProfile = None
+
+    def organizeShakeProfile(self, shakeProfile: ShakeProfile):
+        """ adjust the shake profile to properly locate the shakes and delays of the subchannel reading
+        @param shakeProfile: ShakeProfile object w basic organization of the shakes used to calibrate """
+
+        # Turn off existing per-channel calibration (if any)
+        for c in self.accel.children:
+            c.setTransform(None)
+        self.accel.updateTransforms()
+        self.subchannel = self.accel.subchannels[self.axisIds[self.shaken]]
+
+        a = self.subchannel.getSession()
+        a.removeMean = False
+        self.sampRate = a.getSampleRate()
+
+        # set up correct times of the shakes and delays
+        shakeProfile.adjustProfile(self.subchannel)
+
+        start = a.getInterval()[0] * 1e-6  # make indices start from the correct time
+        shakeProfile.shiftIndices(self.sampRate, start)
+
+        # shave the start & end in case of non-calibration related events / warm-up time
+        self.skipSamples = int(self.skipTime * self.sampRate)
+        shakeProfile.shave(self.skipSamples)  # do not consider the first and last n=skipSamples points
+
+        # assign the shake to be used via the first shake that is within range
+        for shake in shakeProfile.shakes:
+            if shake.amp <= self.accelRange:  # assumes shakes are in sequence of largest to smallest g's
+                self.shake = shake
+                break
+
+        if not self.shake:
+            raise CalibrationError('All shakes are above range of this accelerometer!')
+        print(f"using {self.shake.amp}g shake")
+        self.shakeProfile = shakeProfile
+
+    def calcTrans(self, gains: XYZ):
+        """ calculate transverse sensitivity for the two non-shaken axes
+        @param gains: XYZ of gains
+        @return: transverse sensitivity
+        """
+        nonShaken = [0, 1, 2]
+        nonShaken.remove(self.shaken)
+
+        a_cross = self.rms[nonShaken[0]] * gains[nonShaken[0]]
+        b_cross = self.rms[nonShaken[1]] * gains[nonShaken[1]]
+        c_ampl = self.rms[self.shaken] * gains[self.shaken]
+        Stab = np.sqrt((a_cross ** 2) + (b_cross ** 2))
+        Stb = 100 * (Stab / c_ampl)
+        self.trans = Stb
+        return Stb
+
+    def calcDataRegions(self) -> Tuple[np.ndarray, np.ndarray]:
+        """ collect the usable data and highpass data for calibration
+            @return: tuple of data, and highpassed data
+        """
+        a = self.accel.getSession()
+        a.removeMean = False
+        if self.sampRate < 1000:
+            raise CalibrationError(
+                f"Channel {self.accel.id} ({self.accel.name}) had a low sample rate: {self.sampRate} Hz",
+                self.doc, self.accel)
+
+        # turn data so time is first column, subchannels follow.
+        data = np.flip(np.rot90(a[:]), axis=0)
+        _print(f"\t{len(data)} samples\n")
+        hp_data = np.copy(data)
+
+        # apply highpass=10 filter to the data
+        # not sure why the cutoff is 10
+        for i in range(1, min(4, hp_data.shape[1])):
+            hp_data[:, i] = self.highpassFilter(hp_data[:, i], 10, self.sampRate, 'high')
+
+        data = data[self.skipSamples: -self.skipSamples]
+        hp_data = hp_data[self.skipSamples:-self.skipSamples]
+
+        return data, hp_data
+
+    def calcRMSXYZ(self, hp_data: np.ndarray, length: int=5000):
+        """ Calculate the RMS of all axes of the data!
+            @param hp_data: high pass data of entire channel
+            @param length: number of points to use for selecting a region of the shake
+        """
+
+        def calculateRMS(data: np.ndarray, axis: Optional[int]=None):
+            """ Compute the root mean square of data in a numpy array.
+                    """
+            return np.sqrt(np.mean(data ** 2, axis=axis))
+
+        _println(f"\tShake Start Index: {self.shake.startIndex}.")
+        _println(f"\tShake End Index: {self.shake.endIndex}.")
+
+        # narrow a shake section of <length> values to get the RMS's from
+        shakeRegionStart, shakeRegionEnd = get_center_indexes(self.shake.startIndex, self.shake.endIndex, length)
+        accel = XYZ(hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.x + 1],
+                    hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.y + 1],
+                    hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.z + 1])
+
+        self.rms = XYZ(calculateRMS(accel.x),
+                      calculateRMS(accel.y),
+                      calculateRMS(accel.z))
+        _println(f"\t{self.rms = !r}")
+
+    def calcGain(self):
+        """ Calculate the gain of the shaken axis """
+        referenceRMS = self.shake.amp * (2 ** .5) / 2
+        self.gain = referenceRMS / self.rms[self.shaken]
+
+    def calcQuietMean(self, data: np.ndarray):
+        """ find the mean of the quietest area (uncompensated offset)
+            @param data: 1d array of signal values for the shaken subchannel
+        """
+
+        data = data[:, self.axisIds[self.shaken]+1]
+
+        # grab a 2s span for the quiet region. If recording is not longer than 12s, use 0.5s
+        offsetCalcSpan = 2 if data.shape[0] / self.sampRate > 12 else 0.5  # originally set to 1
+        searchOverlap = 0.8  # 80% overlap with each section that is scanned for RMS
+        offsetCalcSpan = int(offsetCalcSpan * self.sampRate)
+
+        # find the start index of a region of offsetCalcSpan length that is quietest
+        quietestStart = self.findQuietTime(data, self.shakeProfile.delays, offsetCalcSpan, searchOverlap=searchOverlap)
+        self.means = data[quietestStart: quietestStart + offsetCalcSpan].mean()
+
+    def calcOffset(self, gravities: XYZ):
+        """ calculate the compensated offset after the gain
+            @param gravities: XYZ of the gravities calculated """
+        gm = self.gain * self.means
+        self.offset = gravities[self.shaken] - gm
+
+    @staticmethod
+    def highpassFilter(data: np.ndarray, cutoff: int, fs: Union[int, float], btype: str, order: int=5) -> np.ndarray:
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        sos = butter(order, normal_cutoff, btype=btype, analog=False, output='sos')
+        y = sosfilt(sos, data)
+        return y
+
+    def _getSensorName(self, channel) -> str:
+        """ get sensor's name :) """
+        return channel[0].sensor.name.upper()
+
+    def getAxisIds(self, channel) -> XYZ:
         """ Get the IDs for the accelerometer X, Y, and Z subchannels. The
             order differs on old revisions of SSX's analog channel.
-            
+
             @param channel: An accelerometer `dataset.Channel` instance.
             @return: An `XYZ` containing the correct subchannel IDs.
         """
@@ -481,793 +509,150 @@ class AccelCalFile(object):
                                    self.doc, channel)
         return ids
 
-
-    def _getSensorName(self, channel):
-        return channel[0].sensor.name.upper()
-
-
-    def is8gOrLess(self, channel):
-        """ Was the given channel recorded by a sensor that rails at 8g?
-            Used to avoid calibrating against railed data.
-        """
-        try:
-            # XXX:HACK:TODO: use better method to get sensor range, maybe
-            # the parent channel's calibration coefficients.
-            return "ADXL355" in self._getSensorName(channel)
-        except (AttributeError, TypeError):
-            raise
-            # return False
-
-
-    def analyze(self):
-        """ An attempt to port the analysis loop of SSX_Calibration.m to Python.
-
-            @return: The calibration constants tuple and the mean temperature.
-        """
-
-        accelChannel = self.getHighAccelerometer()
-        skipTime = None
-        if self.skipSamples is None:
-            skipTime = 0.5
-
-        if accelChannel:
-            self.hasHiAccel = True
-            
-            # HACK: Fix typo in template the hard way
-            accelChannel.transform.references = (0,)
-            accelChannel.updateTransforms()
-
-            _print("\nAnalyzing primary accelerometer data")
-            self.accel, self.times, self.rms, self.cal, self.means = \
-                self._analyze(accelChannel, skipSamples=self.skipSamples,
-                              skipTime=skipTime)
-                
-        else:
-            self.hasHiAccel = False
-
-        exclude_id = []
-        if accelChannel is not None:
-            exclude_id = [accelChannel.id]
-        accelChannelLo = self.getLowAccelerometer(exclude=exclude_id)
-        if accelChannelLo:
-            self.hasLoAccel = True
-            
-            _print("\nAnalyzing secondary accelerometer data")
-            self.accelLo, self.timesLo, self.rmsLo, self.calLo, self.meansLo = \
-                self._analyze(accelChannelLo, thres=6, start=1000, length=1000,
-                              skipTime=skipTime)
-
-            if not self.hasHiAccel:
-                _println("no hi accelerometer, using lo as main")
-                self.accel = XYZ(self.accelLo)
-                self.times = XYZ(self.timesLo)
-                self.rms = XYZ(self.rmsLo)
-                self.cal = XYZ(self.calLo)
-                self.means = XYZ(self.meansLo)
-        else:
-            self.hasLoAccel = False
-
-        self.accelChannel = accelChannel
-        self.accelChannelLo = accelChannelLo
-        self.cal_temp = self.getChannelMean(self.KNOWN_TEMP_CHANNELS)
-        self.cal_press = self.getChannelMean(self.KNOWN_PRESSURE_CHANNELS)
-        self.cal_humid = self.getChannelMean(self.KNOWN_HUMIDITY_CHANNELS)
-
-        _println()
-
-
-    def getMeans(self, data, starts, span, sampRate, lowpass=2.55):
-        """ Calculate offsets (means).
-            
-            @param data: time + xyz data for analysis
-            @param starts: start index of span for calculating
-            @param span: size of slice to calculate
-            @param sampRate: sample rate of data, used in filtering
-            @param lowpass: filter frequency, 0 for no filtering
-
-            @return: An `XYZ` containing the mean of the selected segment.
-        """
-        # I no longer have any idea why this is implemented this way.
-        means = XYZ()
-        if lowpass:
-            # Apply filter. This also (effectively) removes the mean.
-#             _print("Applying low pass filter... ")
-            for i in range(1, min(4, data.shape[1])):
-                filtered = self.lowpassFilter(data[:, i], lowpass, sampRate)
-#                 means[i-1] = np.abs(filtered[int(sampRate*2):int(sampRate*3)]).mean()
-                start = starts[i-1]
-                means[i-1] = filtered[start:start+span].mean()
-        else:
-            # No filter. Explicitly remove the mean.
-#             _print("Calculating means... ")
-            for i in range(1, min(4, data.shape[1])):
-                start = starts[i - 1]
-                means[i-1] = data[start:start+span].mean()
-        return means
-
-
-    @classmethod
-    def _findQuietTime(cls, data, span, searchOverlap=0.5):
+    def findQuietTime(self, data: np.ndarray, allDelays, span: int, searchOverlap: float=0.5) -> int:
+        """ find the region that is the quietest out of the delays given
+            @param data: 1d data for the shaken subchannel
+            @param allDelays: list of the Delay objects in the shakeProfile
+            @param span: int size of the area to be grabbed
+            @param searchOverlap: percent to overlap scanning of sections
+            @return: int for the index where the quietest region starts """
         minStandardDeviation = None
         bestStartIndex = None
-        dataLength = len(data)
-        if searchOverlap > 0.9:       # Too large an overlap would mean we move backwards
-            searchOverlap = 0.9
-        for startIndex in range(0, dataLength-span, int(span*(1-searchOverlap))):
-            thisStandardDeviation = np.std(data[startIndex:startIndex+span])
-            if minStandardDeviation is None or thisStandardDeviation < minStandardDeviation:
-                minStandardDeviation = thisStandardDeviation
-                bestStartIndex = startIndex
+        _print(f"\tFinding quiet times of shaken axis {'XYZ'[self.shaken]}: ")
+
+        for delay in allDelays:
+            if delay.endIndex - delay.startIndex > span:
+                if searchOverlap > 0.9:  # Too large an overlap would mean we move backwards
+                    searchOverlap = 0.9
+                for startIndex in range(delay.startIndex, min(delay.endIndex, data.shape[0]),
+                                        int(span * (1 - searchOverlap))):
+                    if startIndex + span < data.shape[0]:
+                        thisStandardDeviation = np.std(data[startIndex:startIndex + span])
+                        if minStandardDeviation is None or thisStandardDeviation < minStandardDeviation:
+                            minStandardDeviation = thisStandardDeviation
+                            bestStartIndex = startIndex
             # print(f"Index {startIndex}, StdDev {thisStandardDeviation:0.4f}")
         print(f"Selecting index {bestStartIndex} ({minStandardDeviation=:0.4f})")
         return bestStartIndex
 
 
-    @classmethod
-    def findQuietTimes(cls, data, span, searchOverlap=0.5):
-        """ find the area with the lowest noise
-            
-            @param data: time + xyz data for analysis
-            @param span: size of slice for analysis
-            @param searchOverlap: Start index of search increments by span*(1-searchOverlap)
-
-            @return: An `XYZ` containing the start index of the quietest spans
-        """
-        bestStartIndices = XYZ()
-        for i in range(1, min(4, data.shape[1])):
-            _print(f"Finding quiet times for axis {i-1}: ")
-            bestStartIndices[i-1] = cls._findQuietTime(data[:, i], span, searchOverlap=searchOverlap)
-        return bestStartIndices
-
-
-    def _analyze(self, accelChannel, thres=4, start=5000, startTime=None, length=5000, lengthTime=None,
-                 skipSamples=0, skipTime=None, highpass=10, lowpass=2.55, timeBetweenShakes=3):
-        """ Analyze one accelerometer channel.
-
-            An attempt to port the analysis loop of SSX_Calibration.m to
-            Python.
-
-            @param accelChannel: The accelerometer channel to calibrate.
-            @type accelChannel: `dataset.Channel`
-            @keyword thres: (gs) acceleration detection threshold (trigger for
-                finding which axis is calibrated).
-            @keyword start: Look # data points ahead of first index match after
-                finding point that exceeds threshold.
-            @keyword startTime: if start is None, start = sampRate * startTime
-            @keyword length: The number of samples to use for gain.
-            @keyword lengthTime: if length is None, length = sampRate * lengthTime
-            @keyword skipSamples: # of points to skip at start and end of record, 
-                to account for warm up or jostling
-            @keyword skipTime: if skipSamples is None, skipSamples = sampRate * skipTime
-            @keyword timeBetweenShakes: Time between the large and small shakes
-                used for finding quiet region for offset calculation
-        """
-        self.axisIds = self.getAxisIds(accelChannel)
-
-        # Turn off existing per-channel calibration (if any)
-        for c in accelChannel.children:
-            c.setTransform(None)
-        accelChannel.updateTransforms()
-
-        a = accelChannel.getSession()
-        a.removeMean = False
-        sampRate = self.sampleRates[accelChannel.id] = a.getSampleRate()
-        
-        if sampRate < 1000:
-            raise CalibrationError(f"Channel {accelChannel.id} ({accelChannel.name}) had a low sample rate: {sampRate} Hz",
-                                   self.doc, accelChannel)
-
-        if lengthTime is not None:
-            length = int(sampRate * lengthTime)
-        if startTime is not None:
-            start = int(sampRate * startTime)
-        if skipTime is not None:
-            skipSamples = int(sampRate * skipTime)
-
-        # `a` is now an EventArray, which is "flat". Slices are numpy arrays.
-        # The 'shape' of a sliced EventArray is different, though, so fix.
-        data = np.flip(np.rot90(a[:]), axis=0)
-        _print(f"({len(data)} samples).")
-
-        lowAccelRange = self.is8gOrLess(accelChannel)
-        totalLength = a.session.lastTime - a.session.firstTime
-        expectedLength = 2*start + 2*skipSamples + (5 + 5 + 2)*sampRate     # 2 5 second shakes + 2 second wait
-
-        if lowAccelRange:
-            if totalLength < expectedLength:
-                raise CalibrationError(f"Secondary shake not found. "
-                                       f"Expected length {expectedLength}, got length {totalLength}",
-                                       self.doc, accelChannel)
-            referenceRMS = self.REFERENCE_RMS_4g
-        else:
-            referenceRMS = self.REFERENCE_RMS_10g
-
-        stop = start + length  # Look # of data points ahead of first index match
-        times = data[:, 0] * .000001
-
-        hp_data = np.copy(data)
-
-        if highpass:
-            # _print("Applying high pass filter... ")
-            for i in range(1, min(4, hp_data.shape[1])):
-                hp_data[:, i] = self.highpassFilter(hp_data[:, i], highpass, sampRate)
-
-        # HACK: Some  devices have a longer delay before Z settles.
-        if skipSamples:
-            data = data[skipSamples:-skipSamples]   # Shave off skipSamples points from the beginning and end
-            hp_data = hp_data[skipSamples:-skipSamples]   # Shave off skipSamples points from the beginning and end
-
-        # _print("getting indices... ")
-
-        # Find the start and end of the shaking
-        smallShakeThreshold = 3
-        shakeStartIndex = self.getFirstIndex(hp_data, thres, self.axisIds)
-        shakeEndIndex = self.getLastIndex(hp_data, smallShakeThreshold, self.axisIds)
-
-        offsetCalcSpan = 1.0        # Length of time to grab for offset calculations
-        offsetCalcSpan = int(offsetCalcSpan * sampRate)
-        spanBetweenShakes = int(timeBetweenShakes*sampRate)
-        if spanBetweenShakes > offsetCalcSpan:
-            quietSearchFudgeFactor = 1*sampRate
-            quietStart = int((shakeStartIndex + shakeEndIndex)/2 - spanBetweenShakes/2 - quietSearchFudgeFactor)
-            quietEnd = int(quietStart + spanBetweenShakes + 2*quietSearchFudgeFactor)
-        else:
-            quietStart = 0
-            quietEnd = len(data)    # support for old files, just search everywhere for some peace and quiet in this noise filled world
-
-        quietestOffsets = self.findQuietTimes(data[quietStart:quietEnd], offsetCalcSpan)
-        quietStarts = [quietStart + offset for offset in quietestOffsets]
-
-        means = self.getMeans(data, quietStarts, offsetCalcSpan, sampRate, lowpass)
-
-        if lowAccelRange:
-            print(f"{accelChannel} using 4g shake")
-            validDataStart = int((shakeStartIndex + shakeEndIndex)/2)
-            shakeStartIndex = validDataStart +\
-                              self.getFirstIndex(hp_data[validDataStart:], smallShakeThreshold, self.axisIds)
-            # start = shakeStartIndex + start
-            # stop = start + length
-            # if stop > shakeEndIndex:
-            #     raise CalibrationError("Bad calculation, small shake appears to be too short. first sample %i, last sample %i, need length %i" %
-            #                        (shakeStartIndex, shakeEndIndex, length+start), self.doc, accelChannel)
-            # means = self.getMeans(data[start:, :], sampRate, lowpass)
-
-        _println(f"Shake Start Index: {shakeStartIndex + skipSamples}. ")
-
-        shakeRegionStart = shakeStartIndex + start
-        shakeRegionEnd = shakeStartIndex + stop
-
-        accel = XYZ(hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.x + 1],
-                    hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.y + 1],
-                    hp_data[shakeRegionStart:shakeRegionEnd, self.axisIds.z + 1])
-
-        times = XYZ(times[shakeRegionStart:shakeRegionEnd],
-                    times[shakeRegionStart:shakeRegionEnd],
-                    times[shakeRegionStart:shakeRegionEnd])
-
-        _print("computing RMS... ")
-        rms = XYZ(self.calculateRMS(accel.x),
-                  self.calculateRMS(accel.y),
-                  self.calculateRMS(accel.z))
-        _println(f"{rms = !r}")
-
-        cal = XYZ(referenceRMS / rms.x,
-                  referenceRMS / rms.y,
-                  referenceRMS / rms.z)
-
-        return accel, times, rms, cal, means
-
-
-    #===========================================================================
-    # 
-    #===========================================================================
-    
-    def render(self, imgPath, baseName='vibe_test_', imgType="png", show=False):
-        """ Create a plot of each axis. The resulting filenames are based on
-            the IDE filename.
-            
-            @param imgPath: The save path.
-            @param baseName: The prefix of the filename.
-            @param imgType: The type (file extension) of the image.
-            @param show: If `True`, show the plot in a window.
-            @return: The name of the file generated.
-        """
-        fileName = os.path.splitext(os.path.basename(self.filename))[0]
-        if imgPath is not None:
-            imgName = f'{baseName}{fileName}.{imgType}'
-            saveName = os.path.join(imgPath, imgName)
-        else:
-            saveName = None
- 
-        # Generate the plot
-#         _print("plotting...")
-        plotXMin = min(self.times.x[0], self.times.y[0], self.times.z[0])
-        plotXMax = max(self.times.x[-1], self.times.y[-1], self.times.z[-1])
-        plotXPad = (plotXMax-plotXMin) * 0.01
-        fig = pylab.figure(figsize=(8, 6), dpi=80, facecolor="white")
-        pylab.suptitle(f"File: {os.path.basename(self.filename)}, SN: {self.serialNum}",
-                       fontsize=24)
-        pylab.subplot(1, 1, 1)
-        pylab.xlim(plotXMin-plotXPad, plotXMax+plotXPad)
-        pylab.plot(self.times.x, self.accel.x, color="red",   label="X Axis",
-                   linewidth=1.5, linestyle="-")
-        pylab.plot(self.times.y, self.accel.y, color="green", label="Y Axis",
-                   linewidth=1.5, linestyle="-")
-        pylab.plot(self.times.z, self.accel.z, color="blue",  label="Z Axis",
-                   linewidth=1.5, linestyle="-")
-        pylab.legend(loc='upper right')
- 
-        axes = fig.gca()
-        axes.set_xlabel('Time (seconds)')
-        axes.set_ylabel('Amplitude (g)')
- 
-        if saveName is not None:
-            pylab.savefig(saveName)
-            
-        if show:
-            pylab.show()
- 
-        return saveName
-
-
-    #===========================================================================
-    # 
-    #===========================================================================
-    
-    def validate(self):
-        """ Perform some basic 'sanity check' validation on the recording
-            prior to starting the calibration process.
-        """
-        for ch in self.doc.channels.values():
-            if len(ch.getSession()) == 0:
-                raise CalibrationError("Channel contained no data!",
-                                       self.doc, ch)
-
-
-#===============================================================================
-# 
-#===============================================================================
-
 class Calibrator(object):
-    """ Thing that calculates the calibration polynomials.
-    
-        @ivar workDir: The local 'working' directory. Used by GUI.
-        @ivar calDir: The network calibration directory. Used by GUI.
-        @ivar failed: Did the calibration fail? Used by GUI.
-        @ivar failure: The calibration failure message. Used by GUI.
-        @ivar cancelled: Was the calibration cancelled? Used by GUI.
-    """
 
-    # Default calibration IDs for each channel/subchannel pair
-    # TODO: Refactor this w/ new stuff in `endaq.device`!
-    CAL_IDS = {
-               # Analog primary
-               (8, 0): 1,
-               (8, 1): 2,
-               (8, 2): 3,
-               # S1/S2 Digital primary
-               (80, 0): 81,
-               (80, 1): 82,
-               (80, 2): 83,
-               # SSX/SSS Digital secondary 
-               (32, 0): 33,
-               (32, 1): 34,
-               (32, 2): 35,
-               }
-
-    DEFAULT_CERTIFICATE = "Slam Stick X+DC"
-
-
-    def __init__(self, dev=None, sessionId=None, calHumidity=None,
-                 calTempComp=-0.30, certificate=None, reference=None,
-                 skipSamples=None, user=USER, workDir=None):
-        """ Constructor.
-            
-            @param dev: A `endaq.device.Recorder` instance (a 'real' one). Can be
-                `None` if a list of recording files is provided (see below).
-            @param sessionId: The calibration session/certificate ID, or
-                `None` to create a new one.
-            @param calHumidity: The humidity at the time of calibration,
-                if the recorder being calibrated didn't measure it.
-            @param calTempComp:
-            @param certificate:
-            @param reference: The reference accelerometer.
-            @param skipSamples: The number of samples to ignore from the
-                beginning of a recording.
-            @param user: The name of the technician doing the calibration.
-                Defaults to the name of the computer's logged in user account.
-        """
+    def __init__(self, dev=None, sessionId=None, calHumidity=None, certificate=None, reference=None,
+                 skipTime=0.5, user=USER, workDir=None, shakeOrder=exp_order):
+        """ Constructor """
         self.dev = dev
-        if dev:
-            self.devPath = dev.path
-        else:
-            self.devPath = None
-
-        self.sessionId = sessionId
-        self.meanCalHumid = calHumidity
-        self.calTempComp = calTempComp
+        self.user = user
+        self.workDir = workDir
+        self.basenames = None
+        self.calTimestamp = None
+        self.failure = None
+        self.birth = None
         self.certificate = certificate
         self.reference = reference
-        self.skipSamples = skipSamples
-        self.user = user
+        self.session = None
+        self.sessionId = sessionId
+        self.cancelled = None
+        self.calDir = None
+        self.skipTime = skipTime
+        self.shakeOrder = exp_order
 
-        self.isUpdate = False
+        self.hasHiAccel = None
+        self.hasLoAccel = None
+        self.deviceInfo = None  # TODO: change to deviceInfo
+        self.calFiles = XYZ(None)
 
-        # For use by the GUI
-        self.workDir = workDir  # The local 'working' directory
-        self.calDir = None      # The product calibration directory (server)
-        self.failed = False     # Did the calibration fail?
-        self.failure = None     # Failure message, if above is True
-        self.cancelled = False  # Was the calibration session cancelled?
-
-        self.calFilesUnsorted = self.calFiles = None
-        self.hasHiAccel = self.hasLoAccel = None
-
-        self.meanCalPress = self.meanCalTemp = None
-        self.channels = XYZ(None, None, None)
-        self.channelsLo = XYZ(None, None, None)
+        self.allGains = {}
         self.cal = XYZ(None, None, None)
         self.calLo = XYZ(None, None, None)
+
+        self.allOffsets = {}
         self.offsets = XYZ(None, None, None)
         self.offsetsLo = XYZ(None, None, None)
 
-        # The latest database `Birth` record for the device being calibrated.
-        # Set when the database is updated. 
-        self.birth = None
+        self.allTrans = {}
+        self.trans = XYZ(None, None, None)
+        self.transLo = XYZ(None, None, None)
 
-        # The database record for this session. Set when the database is updated.
-        self.session = None
+        self.meanCalHumid = calHumidity
+        self.meanCalPress = None
+        self.meanCalTemp = None
 
-        # All the other instance variables used (for convenient reference)
-        self.basenames = None
-        self.calDate = None
-        self.calTimestamp = None
-        self.filenames = None
-        self.trans = None
-        self.transLo = None
-
-
-    #===========================================================================
-    #--- File management. Most was moved to `cal_util.py`
-    #===========================================================================
-    
-    def getFiles(self, path=None):
-        """ Get the filenames from the device's last recording directory with
-            3 IDE files. These are presumably the shaker recordings.
+    def calculate(self, filenames: List[str], pn: str=None, mcu: str=None):
+        """ perform all calibration calculations, triggered in cal_wizard.py
+            @param filenames: list of IDE files to use
+            @param pn: string partNumber to calibrate device as - defaults to device on recordings
+            @param mcu: string MCU "EFM" or "STM" to calibrate device as - defaults to device on recordings
         """
-        path = self.dev.path if path is None else path
-        ides = []
-        for root, dirs, files in os.walk(os.path.join(path, 'DATA')):
-            ides.extend(map(lambda x: os.path.join(root, x),
-                            filter(lambda x: x.upper().endswith('.IDE'), files)))
-            for d in dirs:
-                if d.startswith('.'):
-                    dirs.remove(d)
-        return sorted(ides)[-3:]
-
-
-    def closeFiles(self):
-        """ Close all calibration recordings.
-        """
-        if self.calFiles:
-            for c in self.calFiles:
-                try:
-                    c.doc.close()
-                except Exception:
-                    pass
-
-
-    def sortCalFiles(self, calFiles):
-        """ Get the calibration recordings, sorted by the axis shaken.
-        
-            @param calFiles: A list of three `AccelCalFile` instances.
-            @return: An `XYZ` containing the files corresponding to each axis.
-        """
-        self.calFilesUnsorted = calFiles
-        sortedFiles = XYZ()
-
-        try:
-            for i in range(3):
-                sortedFiles[i] = min(calFiles, key=lambda c: c.cal[i])
-                sortedFiles[i].axis = i
-        except AttributeError:
-            # Presumably, there's no 'hi' accelerometer; use 'lo'.
-            for i in range(3):
-                sortedFiles[i] = min(calFiles, key=lambda c: c.calLo[i])
-                sortedFiles[i].axis = i
-
-        self.calFiles = sortedFiles
-
-
-    #===========================================================================
-    #
-    #===========================================================================
-
-    @classmethod
-    def getAxisFlips(cls, dev, calAxes=None, calAxesLo=None):
-        """ Get the inverted axes specific to the device type.
-
-            @param dev: The recording device
-            @param calAxes: A set of three values, -1 or 1, indicating any
-                flipped axes on the primary accelerometer. Overrides the axis
-                flips for the specific device being calibrated.
-            @param calAxes: A set of three values, -1 or 1, indicating any
-                flipped axes on the secondary accelerometer. Overrides the axis
-                flips for the specific device being calibrated.
-            @param calAxesLo
-            @return: A tuple containing two `XYZ` objects: the flips for each
-                accelerometer.
-        """
-        # FUTURE: Less hardcoding.
-        pn = str(dev.partNumber).upper()
-        mcu = str(dev.mcuType).upper()
-
-        if mcu.startswith('STM32'):
-            # Analog accelerometer orientation varies by model
-            if fnmatch(pn, "S?-E*"):
-                calAxes = calAxes or ( 1,  1, -1)  # Channel 8
-            elif fnmatch(pn, "S?-R*"):
-                calAxes = calAxes or (-1, -1, -1)  # Channel 8
-            elif fnmatch(pn, "W?-E*"):
-                calAxes = calAxes or (-1, -1, -1)  # Channel 8
-            elif fnmatch(pn, "W?-R*"):
-                calAxes = calAxes or ( 1,  1, -1)  # Channel 8
-            else:
-                if not calAxes and calAxesLo:
-                    logger.warning(f"Using default axis flips for unknown STM32 device type {pn!r}")
-                calAxes = calAxes or ( 1,  1, -1)  # Channel 8
-
-            # ADXL357 is the same for all STM32 S and W (as of HwRev 2.0.0 - 2.0.1)
-            calAxesLo = calAxesLo or (-1, -1,  1)  # Channel 80
-
-        elif pn.startswith(('S1', 'S2')):
-            # "Mini" with 2 digital accelerometers
-            calAxes = calAxes or     (-1, -1,  1)  # Channel 80
-            calAxesLo = calAxesLo or ( 1,  1,  1)  # Channel 32
-        elif fnmatch(pn, "S?-D16") or fnmatch(pn, "S?-D200"):
-            # One digital accelerometer, old hardware (e.g., SSC equivalents for NAVAIR)
-            calAxes = calAxes or     ( 1,  1, -1)  # Does not really exist for this device
-            calAxesLo = calAxesLo or ( 1,  1,  1)  # Channel 32
-        elif pn.startswith(('S3', 'S4', 'S5', 'S6', 'W5', 'W8')):
-            if "-R" in pn:                         # Piezoresistive device has axis flips
-                calAxes = calAxes or (-1, -1, -1)  # Channel 8
-            elif '-E' in pn:
-                calAxes = calAxes or ( 1,  1, -1)  # Channel 8
-            else:
-                calAxes = calAxes or (-1, -1,  1)  # Channel 80 (the 'main' accelerometer for an Sx-D40)
-            calAxesLo = calAxesLo or (-1, -1,  1)  # Channel 80
-        elif pn.startswith('LOG-0004'):
-            calAxes = calAxes or     (-1,  1, -1)  # Channel 8
-            calAxesLo = calAxesLo or ( 1,  1,  1)  # Channel 32
-        elif pn.startswith('LOG-0002'):
-            calAxes = calAxes or     ( 1,  1, -1)  # Channel 8
-            calAxesLo = calAxesLo or ( 1,  1,  1)  # Channel 32
-        else:
-            if not calAxes and calAxesLo:
-                logger.warning(f"Could not get axis flips for device type {pn!r}")
-            calAxes = calAxes or     ( 1,  1,  1)
-            calAxesLo = calAxesLo or ( 1,  1,  1)
-
-        return XYZ(calAxes), XYZ(calAxesLo)
-
-    @classmethod
-    def getGravity(cls, dev, calFiles):
-        """ Get the gravity directions of the data provided.
-
-            @parameter dev: Device being looked at, so we know the accelerometers and inversions
-            @parameter calFiles: x,y,z calibration data. main and low accelerometers
-            @return: XYZ of the direction of gravity in each file
-        """
-        # FUTURE: Less hardcoding.
-        pn = str(dev.partNumber).upper()
-        flips, flipsLo = cls.getAxisFlips(dev, None, None)
-        # On Mini, use the 40 or 8 g accelerometer. Otherwise use the secondary (which is always 40g)
-        if pn.startswith(('S1', 'S2')):
-            activeFlips = flips
-            activeMeans = [calFiles[i].means[i] for i in range(3)]
-        else:
-            if not calFiles[0].hasLoAccel:
-                print("No DC accelerometer found!")
-                return XYZ([1, 1, 1])
-            activeFlips = flipsLo
-            activeMeans = [calFiles[i].meansLo[i] for i in range(3)]
-        measurement = [activeFlips[i]*activeMeans[i] for i in range(3)]
-        gravity = [m/abs(m) for m in measurement]
-        if gravity[2] != 1:
-            raise CalibrationError("Got the wrong gravity vector on Z for some dumb reason")
-        return XYZ(gravity)
-
-    #===========================================================================
-    # 
-    #===========================================================================
-
-    def calculateTrans(self, calFiles, cal, low=False):
-        """ Calculate the transverse sensitivity.
-
-            @param calFiles: An `XYZ` containing sorted `AccelCalFile` objects.
-            @param cal: An `XYZ` containing calibration values for the axes.
-            @param low: `True` if this is the secondary accelerometer.
-        """
-        def calc_trans(a, b, c, a_corr, b_corr, c_corr):
-            a_cross = a * a_corr
-            b_cross = b * b_corr
-            c_ampl =  c * c_corr
-            Stab = np.sqrt((a_cross**2)+(b_cross**2))
-            Stb = 100 * (Stab/c_ampl)
-            return Stb
-
-        if low:
-            xRms = calFiles.x.rmsLo
-            yRms = calFiles.y.rmsLo
-            zRms = calFiles.z.rmsLo
-        else:
-            xRms = calFiles.x.rms
-            yRms = calFiles.y.rms
-            zRms = calFiles.z.rms
-
-        Sxy = calc_trans(zRms.x, zRms.y, zRms.z, cal.x, cal.y, cal.z)
-        Syz = calc_trans(xRms.y, xRms.z, xRms.x, cal.y, cal.z, cal.x)
-        Sxz = calc_trans(yRms.z, yRms.x, yRms.y, cal.z, cal.x, cal.y)
-
-        return (Sxy, Syz, Sxz)
-
-    
-    def calculateOffset(self, gain, mean, gravity):
-        """
-        """
-        gm = gain * mean
-        return gravity - gm
-
-
-    def calculate(self, filenames=None, calAxes=None, calAxesLo=None):
-        """ Calculate the high-g accelerometer!
-            
-            @param filenames: A set of IDE calibration recording filenames.
-                If `None`, the device will be scanned.
-            @param calAxes: A set of three values, -1 or 1, indicating any
-                flipped axes on the primary accelerometer. Overrides the axis
-                flips for the specific device being calibrated.
-            @param calAxesLo: A set of three values, -1 or 1, indicating any
-                flipped axes on the secondary accelerometer. Overrides the axis
-                flips for the specific device being calibrated.
-        """
-        # TODO: Check for correct number of files?
-        self.calDate = datetime.now()
+        # SETUP STUFF: AccelCalFiles, DeviceInfo, device
         self.calTimestamp = int(time.mktime(time.gmtime()))
-
-        self.filenames = filenames
 
         if filenames is None:
             if self.dev is None:
                 raise ValueError("No recorder or recording files specified!")
             filenames = self.getFiles()
 
-        # Read calibration recordings. Sets `calFiles` and `calFilesUnsorted`
-        calFiles = [AccelCalFile(f, self.dev, skipSamples=self.skipSamples) 
-                                 for f in filenames]
-        self.sortCalFiles(calFiles)
-
-        # If only working from files (e.g. just recalculating calibration from
-        # existing data), get the device from the recordings.
+        firstDoc = get_doc(filenames[0])
         if self.dev is None:
-            self.dev = self.calFiles[0].dev
+            self.dev = fromRecording(firstDoc)
 
-        # Handle inverted axes
-        calAxes, calAxesLo = self.getAxisFlips(self.dev, calAxes, calAxesLo)
+        self.deviceInfo = DeviceInfo(self, self.dev, pn, mcu)
+        hiId, loId = self.deviceInfo.setHiLoAccels(firstDoc)
 
-        self.basenames = XYZ(os.path.basename(c.filename) for c in self.calFiles)
-        self.cal = XYZ(self.calFiles[i].cal[i] * calAxes[i] for i in range(3))
-        
-        # This is probably overkill (all files should be the same)
-        self.hasHiAccel = all(c.hasHiAccel for c in self.calFiles)
-        self.hasLoAccel = all(c.hasLoAccel for c in self.calFiles)
-        
-        # All CalFiles will have 'non-Lo' calibration values. For SSC, these
-        # will be the same as the DC accelerometer values.
-        self.trans = self.calculateTrans(self.calFiles, self.cal)
+        calFiles = [AccelCalFile(f, hiId, loId, self.deviceInfo.ranges, self.shakeOrder, skipTime=self.skipTime)
+                    for f in filenames]
+
+        # determine the channel Ids of all acceleration channels (all will be calibrated)
+        self.deviceInfo.setAccelIds(calFiles)
+
+        # Start with finding gains & uncompensated offset (means)
+        for calFile in calFiles:
+            _print(f"\nWorking on Gains and Means of {calFile.basename}...\n")
+            calFile.getGainsAndMeans()
+
+        # apply the axis flip to the channel's gain
+        self.deviceInfo.setFlips(calFiles)
+        self.sortCalFiles(calFiles)  # organize the calFiles by shake into XYZ
+        self.deviceInfo.getGravities(self.calFiles)  # determine the gravity for the device
+
+        # finish off calibration calculations with compensated offset, and temp/press/humid stuff
+        for calFile in calFiles:
+            calFile.getOffsets(self.deviceInfo.gravities)
+            calFile.setCalTempPressHumid()
 
         self.meanCalTemp = np.mean([cal.cal_temp for cal in self.calFiles])
         self.meanCalPress = np.mean([cal.cal_press for cal in self.calFiles])
-        
         if all(cal.cal_humid for cal in self.calFiles):
             self.meanCalHumid = np.mean([cal.cal_humid for cal in self.calFiles])
 
-        self.offsets = XYZ()
-        gravity = self.getGravity(self.dev, self.calFiles)
-        print("Calibration values:")
-        for i, axis in enumerate('XYZ'):
-            self.offsets[i] = self.calculateOffset(self.cal[i], self.calFiles[i].means[i], gravity[i])
-            print(f"  {axis}: cal={self.cal[i]!r},\tmean={self.calFiles[i].means[i]!r},\toffset={self.offsets[i]}")
+        # hold all final gains and offsets for all accelerometers
+        for accelId in self.deviceInfo.accelIds:
+            self.allGains[accelId] = XYZ(self.calFiles.x.accels[accelId].gain,
+                                         self.calFiles.y.accels[accelId].gain,
+                                         self.calFiles.z.accels[accelId].gain)
+            self.allOffsets[accelId] = XYZ(self.calFiles.x.accels[accelId].offset,
+                                         self.calFiles.y.accels[accelId].offset,
+                                         self.calFiles.z.accels[accelId].offset)
 
-        if self.hasHiAccel and not self.hasLoAccel:
-            self.offsetsLo = XYZ(None, None, None)
-            self.calLo = XYZ(None, None, None)
-            self.transLo = None
-            return
+        # perform transverse sensitivity calculations
+        self.allTrans = {}
+        for id in self.deviceInfo.accelIds:
+            sYZ  = self.calFiles.x.accels[id].calcTrans(self.allGains[id])
+            sXZ = self.calFiles.y.accels[id].calcTrans(self.allGains[id])
+            sXY = self.calFiles.z.accels[id].calcTrans(self.allGains[id])
+            self.allTrans[id] = XYZ(sXY, sYZ, sXZ)
 
-        self.calLo = XYZ([self.calFiles[i].calLo[i] * calAxesLo[i] for i in range(3)])
-        self.transLo = self.calculateTrans(self.calFiles, self.calLo, low=True)
+        # wrap up by readying hi and lo attributes for use in cal_wizard.py
+        self.assignHiLoThings()
 
-        self.offsetsLo = XYZ()
-        for i in range(3):
-            self.offsetsLo[i] = self.calculateOffset(self.calLo[i], self.calFiles[i].meansLo[i], gravity[i])
-
-        print()
-
-    #===========================================================================
-    #
-    #===========================================================================
-
-    def getCertificateRecord(self, **kwargs):
-        """ Get the appropriate `models.CalCertificate` record for the current
-            device. Keyword arguments are passed to the query.
-            
-            If an exact match to the device name or part number is not found,
-            the closest match (by its name's Levenshtein distance) is returned.
-            Note: In the long run, this may not be the best solution.
-            
-            @return: The `models.CalCertificate` record most likely to match.
-        """
-        if self.birth and self.birth.product:
-            if self.birth.product.calCertificate:
-                return self.birth.product.calCertificate
-        
-        name = kwargs.pop('name', (self.dev.productName or self.dev.partNumber))
-        
-        # Try for exact match
-        cq = models.CalCertificate.objects.filter(name=name, **kwargs)
-        c = cq.extra(order_by=["-documentNumber", "-revision"]).first()
-        if c:
-            return c
-        
-        # Get the closest name via Levenshtein distance (fewest differences,
-        # additions, and/or subtractions between the strings)
-        certs = []
-        for c in models.CalCertificate.objects.filter(**kwargs):
-            cn = c.name.split('+')[0]
-            certs.append((c, util.levenshtein(name, cn)))
-        certs.sort(key=lambda x: x[1])
-        
-        cq = models.CalCertificate.objects.filter(name=certs[0][0].name)
-        return cq.extra(order_by=["-documentNumber", "-revision"]).first()
+        print(self)
 
 
-    @classmethod
-    def getSensorRecord(cls, device, sensor, **kwargs):
-        """ Given a `dataset.Sensor` instance from a file, retrieve the
-            corresponding `models.Sensor` record from the database. Keyword
-            arguments are passed to the query.
-            
-            @param device: The database `models.Device` record.
-            @param sensor: The `dataset.Sensor` object.
-            @return: The associated `models.Sensor` record (or `None`).
-        """
-        rec = None
-        sensorSn = None
-        if sensor.traceData:
-            sensorSn = sensor.traceData.get('serialNum', None)
-    
-        if sensorSn:
-            # Find by serial number. Most accurate; no duplicate SNs.
-            rec = device.getSensors(serialNumber=sensorSn, **kwargs).last()
-        elif sensor.id is not None:
-            # Find by sensor ID.
-            rec = device.getSensors(sensorId=sensor.id, **kwargs).last()
-            
-        if rec is None:
-            # Find by sensor part number. String matching is problematic.
-            # Probably digital, and there should be only 1 of each digital.
-            partNum = sensor.name.strip().split()[0]
-            rec = device.getSensors(info__partNumber=partNum, **kwargs).last()
-        
-        return rec
-
-    
     def updateDatabase(self, calHi=True, calLo=True, transHi=True, transLo=True,
                        **kwargs):
         """ Create a new `models.CalSession` record and all its associated
             children (axes, transverse, etc.).
-            
+
             @param calHi: If `True`, create `CalAxis` records for the
                 primary accelerometer.
             @param calLo: If `True`, create `CalAxis` records for the
@@ -1276,7 +661,7 @@ class Calibrator(object):
                 the primary accelerometer.
             @param transLo: If `True`, create `CalTransverse` records for
                 the secondary accelerometer.
-                
+
             @keyword sessionId: The calibration session ID. Overrides any
                 specified at `Calibrator` creation time. `None` will create
                 a new ID.
@@ -1287,59 +672,59 @@ class Calibrator(object):
             @keyword certificate: The session's calibration certificate.
                 Overrides any specified at `Calibrator` creation time.
                 Its type is `products.models.CalCertificate`.
-            
+
             Additional keyword arguments (e.g. `notes`) are passed to the
             new `CalSession` constructor.
         """
         self.birth = models.Birth.objects.filter(serialNumber=self.dev.serialInt
                                                  ).latest('date')
-    
+
         self.sessionId = kwargs.pop('sessionId', self.sessionId)
         newId = self.sessionId is None
         if newId:
             self.sessionId = models.newSerialNumber("Calibration")
-        
+
         if kwargs.setdefault('certificate', self.certificate) is None:
             self.certificate = self.getCertificateRecord()
             kwargs['certificate'] = self.certificate
-        
+
         kwargs.setdefault('humidity', self.meanCalHumid)
         self.reference = kwargs.pop('reference', self.reference)
-        
+
         calArgs = {'device': self.birth.device,
                    'user': self.user,
                    'temperature': self.meanCalTemp,
                    'pressure': self.meanCalPress,
                    'completed': False}
-        
+
         calArgs.update(kwargs)
-        
+
         session, _created = models.CalSession.objects.get_or_create(
-            sessionId=self.sessionId, defaults=calArgs)
+            sessionId=self.sessionId, birtherVersion=__version__, defaults=calArgs)
 
         logger.info(f"{'Created' if _created else 'Updating'} CalSession #{self.sessionId}")
 
-        # Create CalAxis records 
+        # Create CalAxis records
         for idx, f in enumerate(self.calFiles):
             filename = self.basenames[idx]
             if self.hasHiAccel and calHi:
                 subchannel = f.accelChannel[f.axis]
-                self.makeAxis(session, subchannel, 
+                self.makeAxis(session, subchannel,
                               value=self.cal[idx],
                               offset=self.offsets[idx],
                               rms=f.rms[f.axis],
                               filename=filename,
                               reference=self.reference)
-                
+
             if self.hasLoAccel and calLo:
                 subchannel = f.accelChannelLo[f.axis]
-                self.makeAxis(session, subchannel, 
+                self.makeAxis(session, subchannel,
                               value=self.calLo[idx],
                               offset=self.offsetsLo[idx],
                               rms=f.rmsLo[f.axis],
                               filename=filename,
                               reference=self.reference)
-               
+
         # Create CalTransverse records
         for idx, transAxis in enumerate(("XY", "YZ", "XZ")):
             # filename = self.basenames[idx]
@@ -1352,7 +737,7 @@ class Calibrator(object):
                 subChId2 = f.accelChannel[f.axisIds[transAxis[1]]].id
                 self.makeTransverse(session, trans, chId, subChId1, subChId2,
                                     axis=transAxis)
-        
+
             if self.hasLoAccel and transLo:
                 trans = self.transLo[idx]
                 chId = f.accelChannelLo.id
@@ -1360,21 +745,20 @@ class Calibrator(object):
                 subChId2 = "XYZ".index(transAxis[1])
                 self.makeTransverse(session, trans, chId, subChId1, subChId2,
                                     axis=transAxis)
-        
+
         # TODO: Cleanup; try to roll back `sessionId` if cal failed (and this
         # isn't a recalibration). Semi-pseudocode:
         failed = False
         if newId and failed:
             models.revertSerialNumber(self.sessionId, "Calibration")
-        
+
         self.session = session
         return session
-    
-    
-    def makeAxis(self, session, subchannel, value=0, offset=0, rms=None, 
+
+    def makeAxis(self, session, subchannel, value=0, offset=0, rms=None,
                  filename="", reference=None):
         """ Create a `CalAxis` record.
-        
+
             @param session: The `models.CalSession` of this calibration.
             @param subchannel: The `dataset.SubChannel` being calibrated.
             @param value: This axis' calibration value.
@@ -1384,21 +768,21 @@ class Calibrator(object):
             @param reference: The reference sensor.
         """
         logger.debug(f'Creating CalAxis for {subchannel!r}')
-        
+
         reference = reference or self.reference
         axisName = subchannel.displayName or ""
         sensor = self.getSensorRecord(session.device, subchannel.sensor)
-        
+
         if subchannel.transform is None:
             # Use default calibration IDs. May not happen.
-            calId = self.CAL_IDS[(subchannel.parent.id, subchannel.id)]
+            calId = DeviceInfo.CAL_IDS[(subchannel.parent.id, subchannel.id)]
         elif isinstance(subchannel.transform, Number):
             # Polynomial wasn't defined; `transform` is just the ID.
             calId = subchannel.transform
         else:
             # Use transform ID from recording
             calId = subchannel.transform.id
-        
+
         # Values to set, not used to find an existing `CalAxis`.
         axisArgs = {'sensor': sensor,
                     'value': value,
@@ -1419,17 +803,16 @@ class Calibrator(object):
                                         else sensor.info.compSubchannelId)
 
         axis, _created = models.CalAxis.objects.update_or_create(
-                              session=session,
-                              calibrationId=calId,
-                              defaults=axisArgs)
-        
+            session=session,
+            calibrationId=calId,
+            defaults=axisArgs)
+
         return axis
-        
-    
+
     def makeTransverse(self, session, value, channelId, subchannelId1=None,
                        subchannelId2=None, axis=""):
         """ Create a `CalTransverse` record.
-        
+
             @param session: The `models.CalSession` of this calibration.
             @param value: The transverse value.
             @param channelId: The ID of the two axes parent channel.
@@ -1438,28 +821,292 @@ class Calibrator(object):
             @param axis: The combined name of the transverse axes, e.g. "XY"
         """
         logger.debug(f"Creating CalTransverse for axis {axis!r}")
-        
+
         # Values to set, not used to find an existing `CalTransverse`.
         transArgs = {'value': value,
                      'axis': axis}
-        
+
         trans, _created = models.CalTransverse.objects.update_or_create(
-            session=session, 
+            session=session,
             channelId=channelId,
             subchannelId1=subchannelId1,
             subchannelId2=subchannelId2,
             defaults=transArgs)
-    
-        return trans
-    
-    
-    #===========================================================================
-    # 
-    #===========================================================================
 
-    def createCalLogEntry(self, filename, chipId, mode='at'):
-        """ Record this calibration session in the log file.
+        return trans
+
+    def getFiles(self, path=None):
+        """ Get the filenames from the device's last recording directory with
+            3 IDE files. These are presumably the shaker recordings.
         """
-        entry = map(str, (time.asctime(), self.calTimestamp, chipId,
-                      self.dev.serialInt, self.isUpdate, self.sessionId))
-        util.writeFileLine(filename, ','.join(entry), mode=mode)
+        path = self.dev.path if path is None else path
+
+        ides = []
+        for root, dirs, files in os.walk(os.path.join(path, 'DATA')):
+            ides.extend(map(lambda x: os.path.join(root, x),
+                            filter(lambda x: x.upper().endswith('.IDE'), files)))
+            for d in dirs:
+                if d.startswith('.'):
+                    dirs.remove(d)
+        return sorted(ides)[-3:]
+
+    def sortCalFiles(self, calFiles):
+        for calFile in calFiles:
+            self.calFiles[calFile.shaken] = calFile
+
+    def assignHiLoThings(self):
+        hiId = self.deviceInfo.hiAccelId
+        loId = self.deviceInfo.loAccelId
+
+        if hiId: self.hasHiAccel = True
+        if loId: self.hasLoAccel = True
+
+        if self.hasHiAccel:
+            self.cal = self.allGains[hiId]
+            self.offsets = self.allOffsets[hiId]
+            self.trans = self.allTrans[hiId]
+
+        if self.hasLoAccel:
+            self.calLo = self.allGains[loId]
+            self.offsetsLo = self.allOffsets[loId]
+            self.transLo = self.allTrans[loId]
+
+        self.cal = self.cal or self.calLo
+        self.calLo = self.calLo or self.cal
+        self.offsets = self.offsets or self.offsetsLo
+        self.offsetsLo = self.offsetsLo or self.offsets
+        self.trans = self.trans or self.transLo
+        self.transLo = self.transLo or self.trans
+
+    def getCertificateRecord(self, **kwargs):
+        """ Get the appropriate `models.CalCertificate` record for the current
+            device. Keyword arguments are passed to the query.
+
+            If an exact match to the device name or part number is not found,
+            the closest match (by its name's Levenshtein distance) is returned.
+            Note: In the long run, this may not be the best solution.
+
+            @return: The `models.CalCertificate` record most likely to match.
+        """
+        if self.birth and self.birth.product:
+            if self.birth.product.calCertificate:
+                return self.birth.product.calCertificate
+
+        name = kwargs.pop('name', (self.dev.productName or self.dev.partNumber))  # TODO-j: change this to the given pN
+
+        # Try for exact match
+        cq = models.CalCertificate.objects.filter(name=name, **kwargs)
+        c = cq.extra(order_by=["-documentNumber", "-revision"]).first()
+        if c:
+            return c
+
+        # Get the closest name via Levenshtein distance (fewest differences,
+        # additions, and/or subtractions between the strings)
+        certs = []
+        for c in models.CalCertificate.objects.filter(**kwargs):
+            cn = c.name.split('+')[0]
+            certs.append((c, util.levenshtein(name, cn)))
+        certs.sort(key=lambda x: x[1])
+
+        cq = models.CalCertificate.objects.filter(name=certs[0][0].name)
+        return cq.extra(order_by=["-documentNumber", "-revision"]).first()
+
+    def closeFiles(self):
+        """ Close all calibration recordings.
+        """
+        if self.calFiles:
+            for c in self.calFiles:
+                try:
+                    c.doc.close()
+                except Exception:
+                    pass
+
+    @classmethod
+    def getSensorRecord(cls, device, sensor, **kwargs):
+        """ Given a `dataset.Sensor` instance from a file, retrieve the
+            corresponding `models.Sensor` record from the database. Keyword
+            arguments are passed to the query.
+
+            @param device: The database `models.Device` record.
+            @param sensor: The `dataset.Sensor` object.
+            @return: The associated `models.Sensor` record (or `None`).
+        """
+        rec = None
+        sensorSn = None
+        if sensor.traceData:
+            sensorSn = sensor.traceData.get('serialNum', None)
+
+        if sensorSn:
+            # Find by serial number. Most accurate; no duplicate SNs.
+            rec = device.getSensors(serialNumber=sensorSn, **kwargs).last()
+        elif sensor.id is not None:
+            # Find by sensor ID.
+            rec = device.getSensors(sensorId=sensor.id, **kwargs).last()
+
+        if rec is None:
+            # Find by sensor part number. String matching is problematic.
+            # Probably digital, and there should be only 1 of each digital.
+            partNum = sensor.name.strip().split()[0]
+            rec = device.getSensors(info__partNumber=partNum, **kwargs).last()
+
+        return rec
+
+    def __str__(self):
+        result = "\nFILE:                           RMS's\n"
+        id = self.deviceInfo.loAccelId or self.deviceInfo.hiAccelId
+        result += f"{self.calFiles.x.filename}  {self.calFiles.x.accels[id].rms}\n"
+        result += f"{self.calFiles.y.filename}  {self.calFiles.y.accels[id].rms}\n"
+        result += f"{self.calFiles.z.filename}  {self.calFiles.z.accels[id].rms}\n"
+
+        result += "\nCALIBRATION VALUES:\n"
+        for id in self.deviceInfo.accelIds:
+            result += f"{self.dev.channels[id].name}"
+            if id == self.deviceInfo.loAccelId:
+                result += " - Low "
+            if id == self.deviceInfo.hiAccelId:
+                result += "- High "
+            result += "\n"
+            result += f"Gain: {self.allGains[id]}\n"
+            result += f"Offsets: {self.allOffsets[id]}\n"
+            result += f"Transverse Sensitivity: {self.allTrans[id]}\n"
+            result += f"Mean: {XYZ(self.calFiles.x.accels[id].means, self.calFiles.y.accels[id].means, self.calFiles.z.accels[id].means)}\n\n"
+        return result
+
+
+class AccelCalFile(object):
+    """ Holds calibration data regarding a single IDE file """
+
+    def __init__(self, filename, hiId, loId, ranges, shakeOrder=exp_order, skipTime=0.5):
+        self.filename = filename
+        self.basename = os.path.basename(filename)
+        self.name = os.path.splitext(self.basename)[0]
+        self.doc = importFile(filename)
+        self.timestamp = self.doc.lastUtcTime
+        accels = get_channels(self.doc, 'ACCELERATION', subchannels=False)
+
+        missing = [accel.id for accel in accels if accel.id not in ranges]
+        if missing:
+            raise CalibrationError("Expected Acceleration Channel IDs are missing!", missing)
+
+        if loId:
+            self.loId = loId
+            self.accelChannelLo = self.doc.channels[loId]
+            lowest = self.accelChannelLo
+        if hiId:
+            self.hiId = hiId
+            self.accelChannel = self.doc.channels[hiId]
+            lowest = self.accelChannel
+
+        self.cal_temp = None
+        self.cal_press = None
+        self.cal_humid = None
+
+        self.axisFlip = None
+
+        self.shakeOrder = shakeOrder
+        self.shaken = self.determineShaken(lowest)  # .shaken is 0, 1, or 2 for X, Y, or Z
+
+        self.accels = {accel.id: AccelerometerData(self.doc, accel, self.shaken, ranges[accel.id], skipTime) for accel in accels}
+
+    def getGainsAndMeans(self):
+        """ find the gains ad uncompensated offsets of each accelerometer in this file """
+        for id, accel in self.accels.items():
+            _print(f"Analyzing {accel.accel.name} data")
+            accel.organizeShakeProfile(ShakeProfile(self.shakeOrder))
+            data, hp_data = accel.calcDataRegions()
+            accel.calcRMSXYZ(hp_data)
+            accel.calcGain()
+            accel.calcQuietMean(data)
+
+    def getOffsets(self, gravities: XYZ):
+        """ calculate the compensated offset following the gravity calculation
+            @param gravities: XYZ of the gravities for the device """
+        for id, accel in self.accels.items():
+            accel.calcOffset(gravities)
+
+    def getChannelMean(self, knownIds: List[int]):
+        """ Get the mean of a subchannel, using the first existing IDs from
+            the list of `knownIds` that can be found. For getting the average
+            temperature/humidity.
+            @param knownIds: tuples of the ch, schIds that should be collected
+            @return: Mean of the channel or none if it doesn't exist
+        """
+        for chId, subChId in knownIds:
+            if chId in self.doc.channels:
+                if subChId < len(self.doc.channels[chId]):
+                    channel = self.doc.channels[chId][subChId]
+                    return channel.getSession()[:].mean(axis=1)[1]
+
+        return None
+
+    def setCalTempPressHumid(self):
+        """ set Temperature, Pressure, and Humidity calibrations """
+        self.cal_temp = self.getChannelMean(DeviceInfo.KNOWN_TEMP_CHANNELS)
+        self.cal_press = self.getChannelMean(DeviceInfo.KNOWN_PRESSURE_CHANNELS)
+        self.cal_humid = self.getChannelMean(DeviceInfo.KNOWN_HUMIDITY_CHANNELS)
+
+    def determineShaken(self, accel) -> Union[int, float]:
+        """ using the lowest range accel, find the shaken axis
+            @param accel: Channel
+            @return: the sch.id (list index) of the shaken subchannel """
+        data = accel.getSession().arrayRange()[1:min(4, len(accel.children) + 1)]
+        stdevs = np.std(data, axis=1)
+        return stdevs.argmax()
+
+    def __str__(self):
+
+        try:
+            cols = " ".join(f"{v:10.4f}" for v in self.accels[self.loId].rms)
+            return f'{self.name} {cols}'
+        except (TypeError, AttributeError):
+            return super(self, AccelCalFile).__str__()
+
+    def __repr__(self):
+        try:
+            return "<%s %s at 0x%08x>" % (self.__class__.__name__,
+                                          os.path.basename(self.filename),
+                                          id(self))
+        except (AttributeError, TypeError):
+            return super(AccelCalFile, self).__repr__()
+
+
+if __name__ == "__main__":
+    import argparse
+    from .shakeprofile import order_10g, order_10g_4g
+    from . import cal_util
+
+    # run in ProductDatabase via python -m birther.calibration
+
+    parser = argparse.ArgumentParser("Database-less Calibration")
+    parser.add_argument('-p', '--partNumber', default=None, help='Device Part Number to calibrate as.\n'
+                                                                 'Defaults to Device on the recordings')
+    parser.add_argument('-m', '--MCU', default=None, choices=['STM', 'EFM'], help='Select MCU Type\n'
+                                                                                  'Defaults to MCU on the recordings')
+    parser.add_argument('-s', '--shakeProfile', choices=['10g_4g', '10g'], default='exp_order',
+                        help='Select Shake Profile as in shakeprofile.py.\n'
+                             'Defaults to the exp_order in shakeprofile.py: 10g_4g')
+    parser.add_argument('-f', '--filesPath', type=str, help='Path to folder with 3 Calibration IDEs')
+
+    args = parser.parse_args()
+
+    try:
+        dev = getDevices()[0]
+    except:
+        dev=None
+
+    shake_profiles = {'10g': order_10g,
+                      '10g_4g': order_10g_4g,
+                      'exp_order': exp_order}
+
+    cal = Calibrator(dev, shakeOrder=shake_profiles[args.shakeProfile])
+
+    if not args.filesPath:
+        cal_util.makeWorkDir(cal)
+        ideFiles = cal_util.copyToWorkDir(cal)
+    else:
+        ideFiles = [str(args.filesPath) + "\\" + file for file in os.listdir(args.filesPath)]
+
+    if len(ideFiles) == 3:
+        cal.calculate(ideFiles, pn=args.partNumber, mcu=args.MCU)
+    else:
+        raise CalibrationError("Improper number of IDE Files")
