@@ -3,10 +3,10 @@ name: Verifying Calibration
 on: 
   push:
     paths:
-      - 'redo2/ProductDatabase/birther'
+      - 'redo2/ProductDatabase/birther/**'
   pull_request:
     paths:
-      - 'redo2/ProductDatabase/birther'
+      - 'redo2/ProductDatabase/birther/**'
 
 jobs:
   Tests:
