@@ -1,6 +1,12 @@
 name: Verifying Calibration
 
-on: [push, pull_request]
+on: 
+  push:
+    paths:
+      - 'redo2/ProductDatabase/birther'
+  pull_request:
+    paths:
+      - 'redo2/ProductDatabase/birther'
 
 jobs:
   Tests:
