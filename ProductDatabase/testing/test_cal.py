@@ -21,7 +21,6 @@ from birther.calibration import Calibrator
 from math import isclose
 import os
 import endaq.ide as ei
-import plotly.graph_objs as go
 from birther.shakeprofile import order_10g, order_10g_4g
 
 Cal = Calibrator()
